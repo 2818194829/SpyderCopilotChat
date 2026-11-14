@@ -585,6 +585,10 @@ _ICONS = {
                              (4, 4), (6, 4)]),
                   ("poly", [(8, 4), (8, 9), (15, 9), (15, 4)]),
                   ("poly", [(8, 20), (8, 13), (16, 13), (16, 20)])],
+    # 图片：相框 + 山 + 太阳。15px 下也要能认出来，所以只留三笔。
+    "image":     [("rect", (3, 5, 18, 14, 3)),
+                  ("poly", [(3, 16), (9, 10), (16, 16)]),
+                  ("dot", (8.5, 9.5, 1.4))],
 }
 
 _ICON_CACHE = {}
@@ -1191,6 +1195,33 @@ QLabel#editorChip:hover {{
     color: {t['text']};
     border-color: {t['border_strong']};
     background: {t['elevated']};
+}}
+/* 附件缩略图：48px 方块，压一圈细边；悬停提亮边框，右上角浮出 ✕ */
+QFrame#attachThumb {{
+    background: {t['surface_alt']};
+    border: 1px solid {t['border']};
+    border-radius: {max(6, radius - 4)}px;
+}}
+QFrame#attachThumb:hover {{
+    border-color: {t['border_strong']};
+    background: {t['elevated']};
+}}
+QLabel#attachName {{
+    color: {t['text_faint']};
+    font-size: {xs - 1}px;
+    background: transparent;
+}}
+/* 气泡里的图片：和正文同宽的上限，四角微圆 */
+QLabel#bubbleThumb {{
+    background: {t['surface_alt']};
+    border: 1px solid {t['border']};
+    border-radius: {max(6, radius - 4)}px;
+    padding: 1px;
+}}
+QLabel#attachHint {{
+    color: {t['text_faint']};
+    font-size: {xs}px;
+    background: transparent;
 }}
 QFrame#card, QFrame#welcomeCard {{
     background: {t['surface']};

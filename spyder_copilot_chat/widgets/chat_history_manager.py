@@ -10,6 +10,22 @@ CONFIG_DIR = os.path.join(os.path.expanduser("~"), ".spyder_copilot_chat")
 HISTORY_DIR = os.path.join(CONFIG_DIR, "history")
 
 
+def _text_of(content):
+    """取消息的可读文本：带图消息的 content 是 part 列表，不能直接切片。"""
+    if isinstance(content, str):
+        return content
+    if not isinstance(content, list):
+        return ""
+    parts = [p.get("text", "") for p in content
+             if isinstance(p, dict) and p.get("type") == "text"]
+    has_img = any(isinstance(p, dict) and p.get("type") == "image_url"
+                  for p in content)
+    text = " ".join(t for t in parts if t)
+    if has_img:
+        text = ("[图片] " + text).strip()
+    return text
+
+
 def _ensure_dir():
     os.makedirs(HISTORY_DIR, exist_ok=True)
 
@@ -24,7 +40,8 @@ def save_chat(messages, title=None):
     chat_id = str(uuid.uuid4())[:8]
     now = datetime.now().isoformat()
     first_user_msg = next(
-        (m["content"][:50] for m in messages if m.get("role") == "user"),
+        (_text_of(m.get("content"))[:50] for m in messages
+         if m.get("role") == "user"),
         "空对话"
     )
     data = {
@@ -98,7 +115,7 @@ def search_chats(keyword):
                 results.append(chat)
                 continue
             for msg in chat.get("messages", []):
-                if keyword.lower() in msg.get("content", "").lower():
+                if keyword.lower() in _text_of(msg.get("content")).lower():
                     results.append(chat)
                     break
         except Exception:

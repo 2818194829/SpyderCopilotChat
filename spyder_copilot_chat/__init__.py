@@ -405,8 +405,19 @@ v0.8.11 (stable)：内联 diff 把 IDE 打崩 —— 块标记继承错了基类
   - 新增 test_v091.py 32 项 + probe_v091 真机探针：在真 CodeEditor 上
     塞 diagnostics 跑 finish_code_analysis()，复刻用户那次调用栈
 
+v0.8.12 (vision)：输入框能贴图了 —— 截图直接变成缩略图发给模型
+  - Ctrl+V 粘贴截图 / 拖图片文件进来 / 图钉按钮选文件，三种入口
+  - 附件落盘到 ~/.spyder_copilot_chat/attachments（sha1 命名，天然去重），
+    消息里只存 spyder-file:// 引用，base64 在发请求前才算 —— 会话历史
+    不会被几十 MB base64 撑爆
+  - ChatWorker._prepare_messages() 是三家提供方唯一公共咽喉：OpenAI
+    兼容 / Copilot（顺带触发 Copilot-Vision-Request 头）/ Anthropic
+    （转成 image block）
+  - 用户气泡里显示缩略图，点开看原图；重试、历史回放都带图
+  - 模型明确不看图时（deepseek-chat 等）给一句提示，不拦着发
+
 """
 
-__version__ = "0.8.11"
+__version__ = "0.8.12"
 __edition__ = "wired"
 

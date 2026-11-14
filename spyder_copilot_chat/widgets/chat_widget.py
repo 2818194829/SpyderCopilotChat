@@ -20,9 +20,9 @@ import time
 import weakref
 
 from qtpy.QtCore import QPoint, Qt, Signal, QThread, QTimer, QSize
-from qtpy.QtGui import QCursor, QFont, QKeySequence, QTextCursor
+from qtpy.QtGui import QCursor, QFont, QKeySequence, QPixmap, QTextCursor
 from qtpy.QtWidgets import (
-    QAction, QApplication, QFrame, QHBoxLayout,
+    QAction, QApplication, QDialog, QFileDialog, QFrame, QHBoxLayout,
     QLabel, QListWidget, QListWidgetItem, QMenu, QMessageBox,
     QPlainTextEdit, QProgressBar, QPushButton, QScrollArea, QSizePolicy,
     QTextEdit, QToolButton, QToolTip, QVBoxLayout, QWidget,
@@ -39,6 +39,7 @@ from ..copilot_client import (
     TOOL_GROUP_REVIEW, TOOL_GROUP_WEB,
 )
 from .agentic_actions import execute_tool, get_mcp_tool_definitions
+from . import attachments
 from .approval_card import (
     ApprovalCard, needs_approval, EXECUTE_TOOLS,
     SHELL_TOOLS, SOURCE_SUFFIXES,
@@ -447,6 +448,118 @@ def _fmt_dur(seconds):
     return f"{mins}m{rest}s" if mins else f"{rest}s"
 
 
+def thumb_pixmap(path, size):
+    """把图片读成不超过 ``size`` 的缩略图；读不出来返回 None。"""
+    try:
+        pm = QPixmap(path)
+    except Exception:                       # noqa: BLE001
+        return None
+    if pm is None or pm.isNull():
+        return None
+    if size.width() <= 0 or size.height() <= 0:
+        return pm
+    if pm.width() <= size.width() and pm.height() <= size.height():
+        return pm
+    return pm.scaled(size, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+
+
+def thumb_pixmap_cover(path, size):
+    """等比放大到铺满 ``size`` 再居中裁切——一排 chip 高度才整齐。"""
+    try:
+        pm = QPixmap(path)
+    except Exception:                       # noqa: BLE001
+        return None
+    if pm is None or pm.isNull():
+        return None
+    pm = pm.scaled(size, Qt.KeepAspectRatioByExpanding,
+                   Qt.SmoothTransformation)
+    x = max(0, (pm.width() - size.width()) // 2)
+    y = max(0, (pm.height() - size.height()) // 2)
+    return pm.copy(x, y, size.width(), size.height())
+
+
+def show_image_preview(parent, path):
+    """点缩略图看大图。窗口按图比例缩放，最大 900x620。"""
+    pm = QPixmap(path) if os.path.exists(path) else None
+    if pm is None or pm.isNull():
+        return
+    dlg = QDialog(parent)
+    dlg.setWindowTitle(os.path.basename(path))
+    lay = QVBoxLayout(dlg)
+    lay.setContentsMargins(8, 8, 8, 8)
+    label = QLabel()
+    label.setAlignment(Qt.AlignCenter)
+    avail = pm.size()
+    if avail.width() > 900 or avail.height() > 620:
+        avail = pm.scaled(900, 620, Qt.KeepAspectRatio,
+                          Qt.SmoothTransformation).size()
+    label.setPixmap(pm.scaled(avail, Qt.KeepAspectRatio,
+                              Qt.SmoothTransformation))
+    lay.addWidget(label)
+    try:
+        theme.harmonize(dlg, standalone=True)
+    except Exception:                       # noqa: BLE001
+        pass
+    dlg.exec_() if hasattr(dlg, "exec_") else dlg.exec()
+
+
+class AttachThumb(QFrame):
+    """输入区里的一张待发送图片：48px 缩略图 + 右上角 ✕。
+
+    刻意不做「文件名 chip」：面板常常只有 430px 宽，六个带名字的 chip
+    会立刻溢出；缩略图 48px 一排六个也就 300px，名字放进 tooltip。
+    """
+
+    removed = Signal(str)
+
+    SIZE = 48
+
+    def __init__(self, path, name="", parent=None):
+        super().__init__(parent)
+        self._path = path
+        self._name = name or os.path.basename(path)
+        theme.named(self, "attachThumb")
+        self.setFixedSize(self.SIZE, self.SIZE)
+        self.setCursor(Qt.PointingHandCursor)
+        try:
+            self.setToolTip("%s\n点击查看大图，✕ 移除" % self._name)
+        except Exception:                   # noqa: BLE001
+            pass
+        self._img = QLabel(self)
+        self._img.setGeometry(2, 2, self.SIZE - 4, self.SIZE - 4)
+        self._img.setAlignment(Qt.AlignCenter)
+        self._img.setAttribute(Qt.WA_TransparentForMouseEvents, True)
+        pm = thumb_pixmap_cover(path, QSize(self.SIZE - 4, self.SIZE - 4))
+        if pm is not None:
+            self._img.setPixmap(pm)
+        else:
+            self._img.setText("?")
+        # ✕ 必须有底色：直接压在浅色截图上时，一条细白线根本看不见。
+        self._close = QToolButton(self)
+        self._close.setFixedSize(15, 15)
+        self._close.setCursor(Qt.PointingHandCursor)
+        self._close.setToolTip("移除这张图")
+        self._close.setIcon(theme.make_icon("close", "#ffffff", 12))
+        self._close.setIconSize(QSize(9, 9))
+        self._close.setStyleSheet(
+            "QToolButton { border: none; border-radius: 7px;"
+            " background: rgba(12, 15, 20, 0.78); }"
+            "QToolButton:hover { background: #d64545; }")
+        self._close.move(self.SIZE - 18, 3)
+        self._close.clicked.connect(lambda: self.removed.emit(self._path))
+        self._close.raise_()
+
+    def resizeEvent(self, event):  # noqa: N802 - Qt 接口
+        super().resizeEvent(event)
+        self._close.move(self.width() - 17, 1)
+
+    def mouseReleaseEvent(self, event):  # noqa: N802 - Qt 接口
+        if (event.button() == Qt.LeftButton
+                and self.rect().contains(event.pos())):
+            show_image_preview(self, self._path)
+        super().mouseReleaseEvent(event)
+
+
 class ProcessPane(QFrame):
     """一轮对话的「过程」折叠面板（v0.8.4）。
 
@@ -677,6 +790,32 @@ class ProcessPane(QFrame):
             self._render()
 
 
+class BubbleThumb(QLabel):
+    """气泡里的一张图：缩略图，点开看原图。
+
+    不能用「给 QLabel 实例赋一个 mouseReleaseEvent」的写法——PyQt 的
+    虚函数派发走类型查找，实例属性不参与，点了没反应。必须真的子类化。
+    """
+
+    def __init__(self, path, parent=None):
+        super().__init__(parent)
+        self._path = path
+        theme.named(self, "bubbleThumb")
+        pm = thumb_pixmap(path, QSize(240, 120))
+        if pm is not None:
+            self.setPixmap(pm)
+        else:
+            self.setText("图片已丢失")
+        self.setCursor(Qt.PointingHandCursor)
+        self.setToolTip(os.path.basename(path))
+
+    def mouseReleaseEvent(self, event):  # noqa: N802 - Qt 接口
+        if (event.button() == Qt.LeftButton
+                and self.rect().contains(event.pos())):
+            show_image_preview(self, self._path)
+        super().mouseReleaseEvent(event)
+
+
 class MessageBubble(QFrame):
     """消息气泡 — v0.6.0 扁平时间线设计。
 
@@ -768,6 +907,15 @@ class MessageBubble(QFrame):
                 self._action_icons.append((b, name))
         lay.addLayout(header)
 
+        # ── 这条消息带的图：缩略图横排，点开看原图 ──
+        self._attach_row = QWidget()
+        self._attach_lay = QHBoxLayout(self._attach_row)
+        self._attach_lay.setContentsMargins(0, 2, 0, 0)
+        self._attach_lay.setSpacing(4)
+        self._attach_lay.addStretch()
+        self._attach_row.setVisible(False)
+        lay.addWidget(self._attach_row)
+
         # v0.8.4：过程折叠面板。放在正文之上——折叠态它就是一行摘要，
         # 展开态才把工具卡片和中间叙述铺开。
         self._process = ProcessPane(self)
@@ -856,6 +1004,17 @@ class MessageBubble(QFrame):
         avail = self.width() - 2 * pad - 4
         d.setTextWidth(max(avail, 180))
         self._view.setFixedHeight(int(d.size().height() + 8))
+
+    def set_attachments(self, paths):
+        """挂上这条消息的图片缩略图（用户消息用）。"""
+        for path in list(paths or []):
+            if not path:
+                continue
+            self._attach_lay.insertWidget(self._attach_lay.count() - 1,
+                                          BubbleThumb(path, self))
+        if self._attach_lay.count() > 1:
+            self._attach_row.setVisible(True)
+            self._adjust()
 
     def refresh_theme(self):
         """主题切换后重绘图标与 Markdown 内联色。"""
@@ -1034,6 +1193,10 @@ class MessageBubble(QFrame):
 class ChatInput(QPlainTextEdit):
     """Composer 输入区 — 无边框，边框由外层统一容器提供。"""
     send_requested = Signal()
+    #: 剪贴板里粘进来的一张图（QImage）
+    image_pasted = Signal(object)
+    #: 拖进来的若干图片文件路径
+    files_dropped = Signal(list)
     FONT_SIZE = 14
 
     @classmethod
@@ -1043,13 +1206,87 @@ class ChatInput(QPlainTextEdit):
     def __init__(self, parent=None):
         super().__init__(parent)
         theme.named(self, "composerInput")
-        self.setPlaceholderText("输入消息，或 / 查看命令   ·   Enter 发送")
+        self.setPlaceholderText(
+            "输入消息 · / 命令 · Enter 发送 · 截图可粘贴")
         # 主流 composer 的高度随内容增长：空输入时紧凑，长提示最多到 140px。
         self.setFixedHeight(48)
         self.setFrameShape(QFrame.NoFrame)
         self.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        self.setAcceptDrops(True)
         self.textChanged.connect(self._auto_height)
+
+    # ── 图片粘贴 / 拖入 ────────────────────────────────────────
+    @staticmethod
+    def _image_paths(mime):
+        paths = []
+        if mime is None or not mime.hasUrls():
+            return paths
+        for url in mime.urls():
+            if not url.isLocalFile():
+                continue
+            path = url.toLocalFile()
+            if attachments.is_image_file(path):
+                paths.append(path)
+        return paths
+
+    def insertFromMimeData(self, source):  # noqa: N802 - Qt 接口
+        """粘贴：截图直接变成附件，而不是往输入框里塞一个乱码方块。
+
+        只在「没有纯文本」时才抢图：从 Word / 网页复制带图段落时剪贴板
+        同时有 TEXT 和 IMAGE，那种场景用户要的是文字。
+        """
+        try:
+            if source.hasImage() and not source.hasText():
+                image = source.imageData()
+                if image is not None and hasattr(image, "toImage"):
+                    image = image.toImage()
+                if image is not None and not image.isNull():
+                    self.image_pasted.emit(image)
+                    return
+            paths = self._image_paths(source)
+            if paths:
+                # 图片文件 URL 不看 hasText()：Qt 给 uri-list 的同时一定
+                # 附一份文本（就是那个 file:/// 串），按文本判会永远落空
+                self.files_dropped.emit(paths)
+                return
+        except Exception:                 # noqa: BLE001 - 粘贴永远不能炸
+            logger.debug("paste image failed", exc_info=True)
+        super().insertFromMimeData(source)
+
+    def dragEnterEvent(self, event):  # noqa: N802 - Qt 接口
+        mime = event.mimeData()
+        if self._image_paths(mime) or (
+                mime.hasImage() and not mime.hasText()):
+            event.acceptProposedAction()
+            return
+        super().dragEnterEvent(event)
+
+    def dragMoveEvent(self, event):  # noqa: N802 - Qt 接口
+        if self._image_paths(event.mimeData()):
+            event.acceptProposedAction()
+            return
+        super().dragMoveEvent(event)
+
+    def dropEvent(self, event):  # noqa: N802 - Qt 接口
+        mime = event.mimeData()
+        paths = self._image_paths(mime)
+        if paths:
+            self.files_dropped.emit(paths)
+            event.acceptProposedAction()
+            return
+        try:
+            if mime.hasImage() and not mime.hasText():
+                image = mime.imageData()
+                if image is not None and hasattr(image, "toImage"):
+                    image = image.toImage()
+                if image is not None and not image.isNull():
+                    self.image_pasted.emit(image)
+                    event.acceptProposedAction()
+                    return
+        except Exception:                 # noqa: BLE001
+            logger.debug("drop image failed", exc_info=True)
+        super().dropEvent(event)
 
     def _auto_height(self):
         lines = max(1, self.document().blockCount())
@@ -1180,7 +1417,21 @@ class ChatWorker(QThread):
             self._close_resp()
 
     def _prepare_messages(self):
-        msgs = list(self.messages)
+        """发请求前的最后一道加工：把本地图片引用换成 data URL。
+
+        这是所有提供方（OpenAI 兼容 / Copilot / Anthropic）唯一的公共
+        咽喉，所以编码只写在这里。历史里存的是 ``spyder-file://<path>``
+        引用，几十字节；真正的 base64 每次请求现算，会话文件不会被撑爆。
+        """
+        msgs = []
+        for m in self.messages:
+            msg = dict(m) if isinstance(m, dict) else m
+            if isinstance(msg, dict) and isinstance(msg.get("content"), list):
+                resolved, errors = attachments.resolve_parts(msg["content"])
+                for err in errors:
+                    logger.warning("image attachment: %s", err)
+                msg["content"] = resolved
+            msgs.append(msg)
         if self.sp:
             msgs.insert(0, {"role": "system", "content": self.sp})
         return msgs
@@ -1453,8 +1704,43 @@ class ChatWorker(QThread):
                 else:
                     anthro.append({"role": "assistant", "content": content})
             else:
-                anthro.append({"role": role, "content": m.get("content", "")})
+                anthro.append({
+                    "role": role,
+                    "content": self._anthropic_content(m.get("content", "")),
+                })
         return anthro
+
+    @staticmethod
+    def _anthropic_content(content):
+        """OpenAI 多模态 part → Anthropic content block。
+
+        纯字符串原样返回（老消息、工具结果都是字符串）；带图的转成
+        ``{"type": "image", "source": {...}}``，否则 Anthropic 会因为
+        不认识 ``image_url`` 直接 400。
+        """
+        if not isinstance(content, list):
+            return content
+        blocks = []
+        for part in content:
+            if not isinstance(part, dict):
+                continue
+            kind = part.get("type")
+            if kind == "text":
+                blocks.append({"type": "text", "text": part.get("text", "")})
+            elif kind == "image_url":
+                url = (part.get("image_url") or {}).get("url", "")
+                if not isinstance(url, str) or not url:
+                    continue
+                if url.startswith("data:"):
+                    head, _, payload = url.partition(",")
+                    mime = head[5:].split(";")[0] or "image/png"
+                    blocks.append({"type": "image", "source": {
+                        "type": "base64", "media_type": mime,
+                        "data": payload}})
+                else:
+                    blocks.append({"type": "image", "source": {
+                        "type": "url", "url": url}})
+        return blocks or ""
 
     @staticmethod
     def _anthropic_tools_from_openai(openai_tools):
@@ -1729,6 +2015,8 @@ class CopilotChatPanel(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self._messages = []
+        #: 待发送的图片附件：[{"path": ..., "name": ...}]
+        self._attachments = []
         self._config = get_provider_config()
         self._system_prompt = load_system_prompt()
         self._worker = None
@@ -2378,6 +2666,16 @@ class CopilotChatPanel(QWidget):
         e_lay.addStretch()
         c_lay.addWidget(self._editor_bar)
 
+        # ── 图片附件条：粘贴 / 拖入 / 选文件后的缩略图就在这儿 ──
+        self._attach_bar = QWidget()
+        self._attach_bar.setVisible(False)
+        a_lay = QHBoxLayout(self._attach_bar)
+        a_lay.setContentsMargins(0, 0, 0, 0)
+        a_lay.setSpacing(4)
+        a_lay.addStretch()
+        self._attach_lay = a_lay
+        c_lay.addWidget(self._attach_bar)
+
         self._editor_menu = QMenu(self)
         theme.named(self._editor_menu, "overflowMenu")
         self._editor_actions = []
@@ -2397,6 +2695,8 @@ class CopilotChatPanel(QWidget):
         self._input = ChatInput()
         self._input.send_requested.connect(self._send)
         self._input.textChanged.connect(self._on_input_changed)
+        self._input.image_pasted.connect(self._on_image_pasted)
+        self._input.files_dropped.connect(self._on_image_files)
         c_lay.addWidget(self._input)
 
         controls = QWidget()
@@ -2404,6 +2704,10 @@ class CopilotChatPanel(QWidget):
         ctl = QHBoxLayout(controls)
         ctl.setContentsMargins(0, 0, 0, 0)
         ctl.setSpacing(6)
+        self._attach_btn = theme.icon_button(
+            "image", "添加图片（截图可直接 Ctrl+V 粘贴，或拖进来）", 26)
+        self._attach_btn.clicked.connect(self._pick_images)
+        ctl.addWidget(self._attach_btn)
         ctl.addWidget(self._mode_btn)
         ctl.addWidget(self._agent_btn)
         self._policy_chip = theme.chip("按风险审批")
@@ -2974,10 +3278,22 @@ class CopilotChatPanel(QWidget):
 
         # 重建消息气泡
         for m in self._messages:
-            self._add_msg(m["role"], m.get("content", ""))
+            content = m.get("content")
+            text = attachments.message_text(content)
+            images = attachments.message_images(content)
+            if m.get("role") == "user" and images:
+                bubble = self._add_msg("user", text)
+                bubble.set_attachments(images)
+            else:
+                self._add_msg(m.get("role", "assistant"), text)
 
-        # 重新发送最后一条用户消息
-        self._input.setPlainText(last_user_msg.get("content", ""))
+        # 重新发送最后一条用户消息（图片跟着回去，否则重试就丢图了）
+        last_content = last_user_msg.get("content")
+        self._attachments = [
+            {"path": p, "name": os.path.basename(p)}
+            for p in attachments.message_images(last_content)]
+        self._refresh_attach_bar()
+        self._input.setPlainText(attachments.message_text(last_content))
         self._send()
 
     def _clear_ui(self):
@@ -3023,6 +3339,89 @@ class CopilotChatPanel(QWidget):
             self._show_cmd_dropdown()
         elif not text.startswith("/") and self._cmd_dropdown:
             self._cmd_dropdown.hide()
+
+    # ── 图片附件（粘贴 / 拖入 / 选文件） ─────────────────────────
+    def _pick_images(self):
+        paths, _filter = QFileDialog.getOpenFileNames(
+            self, "选择要发给模型的图片", "",
+            "图片 (*.png *.jpg *.jpeg *.gif *.webp *.bmp);;所有文件 (*)")
+        if paths:
+            self._on_image_files(paths)
+
+    def _on_image_pasted(self, image):
+        """剪贴板里的截图：直接落盘成 PNG，再挂到附件条上。"""
+        path, err = attachments.save_qimage(image, "clipboard.png")
+        if err:
+            QMessageBox.warning(self, "无法添加图片", err)
+            return
+        self._add_attachment(path, "剪贴板截图")
+
+    def _on_image_files(self, paths):
+        errors = []
+        for src in paths:
+            path, err = attachments.save_file(src)
+            if err:
+                errors.append("%s：%s" % (os.path.basename(str(src)), err))
+                continue
+            self._add_attachment(path, os.path.basename(str(src)))
+        if errors:
+            QMessageBox.warning(self, "有图片没能加上",
+                                "\n".join(errors[:5]))
+
+    def _add_attachment(self, path, name=""):
+        if any(a["path"] == path for a in self._attachments):
+            return                              # 同一张图贴两次就一张
+        if len(self._attachments) >= attachments.MAX_IMAGES:
+            QMessageBox.information(
+                self, "图片数量已达上限",
+                "一条消息最多带 %d 张图片。" % attachments.MAX_IMAGES)
+            return
+        self._attachments.append({"path": path,
+                                  "name": name or os.path.basename(path)})
+        self._refresh_attach_bar()
+
+    def _remove_attachment(self, path):
+        self._attachments = [a for a in self._attachments
+                             if a["path"] != path]
+        self._refresh_attach_bar()
+
+    def _clear_attachments(self):
+        self._attachments = []
+        self._refresh_attach_bar()
+
+    def _refresh_attach_bar(self):
+        lay = self._attach_lay
+        while lay.count() > 1:              # 末尾的 stretch 必须留着
+            item = lay.takeAt(0)
+            w = item.widget()
+            if w is not None:
+                w.setParent(None)
+                w.deleteLater()
+        for att in self._attachments:
+            thumb = AttachThumb(att["path"], att["name"])
+            thumb.removed.connect(self._remove_attachment)
+            lay.insertWidget(lay.count() - 1, thumb)
+        self._attach_bar.setVisible(bool(self._attachments))
+        self._attach_btn.setToolTip(
+            "添加图片（截图可直接 Ctrl+V 粘贴，或拖进来）"
+            + ("　已附 %d 张" % len(self._attachments)
+               if self._attachments else ""))
+
+    def _content_with_images(self, prompt_text):
+        """没有图时原样返回字符串；有图就升级成多模态 part 列表。
+
+        保持字符串形态很重要：不带图的老消息、工具结果、system 提示全都
+        是纯字符串，一旦无条件改成 list，``m["content"]`` 的所有使用点
+        都得跟着改。
+        """
+        if not self._attachments:
+            return prompt_text
+        parts = []
+        if (prompt_text or "").strip():
+            parts.append({"type": "text", "text": prompt_text})
+        for att in self._attachments:
+            parts.append(attachments.part_for(att["path"], att["name"]))
+        return parts
 
     def _show_cmd_dropdown(self):
         if self._cmd_dropdown is None:
@@ -3323,7 +3722,14 @@ class CopilotChatPanel(QWidget):
         if data:
             self._clear_chat()
             for m in data.get("messages", []):
-                self._add_msg(m["role"], m["content"])
+                content = m.get("content")
+                text = attachments.message_text(content)
+                images = attachments.message_images(content)
+                if m.get("role") == "user" and images:
+                    bubble = self._add_msg("user", text)
+                    bubble.set_attachments(images)
+                else:
+                    self._add_msg(m.get("role", "assistant"), text)
             self._messages = data.get("messages", [])
 
     # ── 设置 ──
@@ -3423,6 +3829,10 @@ class CopilotChatPanel(QWidget):
         self._clear_ui()
         self._messages = []
         self._current_bubble = None
+        try:
+            self._clear_attachments()
+        except AttributeError:      # UI 还没建好（构造期调用）
+            self._attachments = []
         self._set_awaiting_approval(False)
         self._pending_card = None
         self._last_card = None
@@ -3434,7 +3844,8 @@ class CopilotChatPanel(QWidget):
 
     def _send(self):
         text = self._input.toPlainText().strip()
-        if not text:
+        # 只发图不写字也是合法的一条消息
+        if not text and not self._attachments:
             return
 
         # v0.5.5 P0：运行中输入新指令 = 中断当前任务并就地转向
@@ -3527,9 +3938,18 @@ class CopilotChatPanel(QWidget):
         # 发送瞬间再取一次：防止"刚选完文字就回车"用到上一帧的上下文
         self._refresh_editor_chip()
         prompt_text = self._compose_user_prompt(text)
-        self._add_msg("user", text)
-        self._messages.append({"role": "user", "content": prompt_text})
+        content = self._content_with_images(prompt_text)
+        image_paths = [a["path"] for a in self._attachments]
+        bubble = self._add_msg("user", text)
+        if image_paths:
+            bubble.set_attachments(image_paths)
+        self._messages.append({"role": "user", "content": content})
+        self._clear_attachments()
         self._current_bubble = self._add_msg("assistant", "")
+        if image_paths:
+            hint = attachments.vision_hint(self._effective_model())
+            if hint:
+                self._current_bubble.append_block(hint)
 
         # 记录参与者信息
         participant_info = participant.to_dict() if participant else {}
@@ -4985,10 +5405,14 @@ class CopilotChatPanel(QWidget):
         self._tool_call_history = []
         self._verify_attempts = 0
         self._usage.reset_turn()
-        self._add_msg("user", text)
+        image_paths = [a["path"] for a in self._attachments]
+        bubble = self._add_msg("user", text)
+        if image_paths:
+            bubble.set_attachments(image_paths)
         self._refresh_editor_chip()
-        self._messages.append(
-            {"role": "user", "content": self._compose_user_prompt(text)})
+        content = self._content_with_images(self._compose_user_prompt(text))
+        self._messages.append({"role": "user", "content": content})
+        self._clear_attachments()
         self._current_bubble = self._add_msg("assistant", "")
         self._busy = True
         self._send_btn.setText("转向")

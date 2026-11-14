@@ -2,7 +2,7 @@
 
 把 **GitHub Copilot Chat** 搬进 Spyder 6：侧栏对话、Agent 自动改代码、改动直接标成红绿行等你逐处接受。
 
-![version](https://img.shields.io/badge/version-0.8.11-blue)
+![version](https://img.shields.io/badge/version-0.8.12-blue)
 ![python](https://img.shields.io/badge/python-3.9%2B-blue)
 ![spyder](https://img.shields.io/badge/Spyder-6.x-8A2BE2)
 ![license](https://img.shields.io/badge/license-MIT-green)
@@ -90,6 +90,7 @@ Spyder 独立安装包把自带环境目录设成只读 ACL，`pip` 默认会落
 
 ### 🤖 AI 核心
 - **AI 聊天面板** — 在 Spyder 中与 AI 对话，支持流式输出
+- **图片附件** — `Ctrl+V` 粘贴截图 / 拖图片文件 / 图钉按钮选文件，缩略图直接发给多模态模型（支持视觉的模型才能读）
 - **Agent 模式** — AI 可以读取文件、搜索代码、创建文件、运行命令等
 - **多 Provider 支持** — GitHub Copilot / DeepSeek / OpenAI / Anthropic / Ollama 等 10 个服务商
 - **内联聊天** — 在编辑器中快速对话，直接针对选中代码提问

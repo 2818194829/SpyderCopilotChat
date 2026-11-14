@@ -2,6 +2,38 @@
 
 只记录对使用者有影响的变更。最新的在最上面。
 
+## v0.8.21：Installer Edition（装完当场证明装对了）
+
+这次不是界面问题，是"装了但没生效"：Release 页有 0.8.20，`pip` 也打印
+`Successfully installed`，Spyder 里跑的却还是 0.8.13。中间七个版本的功能
+（导航条、围栏修复、浮层对齐、悬停放大）在这台机器上一次都没出现过，而且
+没有任何报错——这才是最坏的一种故障。
+
+| | |
+|---|---|
+| 坑① | 挑 wheel 靠文件名排序，`0.8.9` 排在 `0.8.13` 后面，"最新那个"根本不是最新的 |
+| 坑② | 校验用 `python -c "import spyder_copilot_chat"` 在项目根跑，`sys.path[0]` 就是当前目录，读到的其实是**工作树源码**——"版本对得上"这个结论本身不成立 |
+| 坑③ | 插件必须落进 Spyder 独立版的 `envs/spyder-runtime` 的 user site；装进别的解释器时，Spyder 看不见，pip 也不会提醒 |
+
+新增 `scripts/install.py`，把挑包、装包、验证串成一条命令：
+
+```bash
+python scripts/install.py            # 装最新 wheel + 回读校验
+python scripts/install.py --check    # 只回答「现在到底跑的是哪版」
+python scripts/install.py --dry-run  # 只打印将执行的命令
+```
+
+它做的事：
+
+- **按版本元组**挑 wheel（`dist/` + `latest/`，固定链接的版本段 `0` 只作兜底）；
+- 按「`--python` → `SPYDER_COPILOT_PYTHON` → `spyder` 启动器 → 独立版固定路径（含非系统盘 `X:\ProgramData\spyder-6`）→ 当前解释器」定位目标；
+- `pip install --user --no-deps --upgrade --force-reinstall` 装进去；
+- 再用**目标解释器**、带 `-E` 和临时工作目录回读 `__version__` / `__edition__` 与 7 个能力符号（`MessageRail.HOVER_W`、`CopilotChatPanel._flyout_y`、`_balance_fences`、`_strip_fence_lines` 等），对不上就以退出码 2 结束并指出缺哪一项。
+
+本机实测：`--check` 原先读出 `0.8.13`（路径在 user site），重装后为 `0.8.20（hover）`、符号 7 项全就位。
+
+新增 `test_v101.py` 63 项（版本排序、wheel 挑选、解释器优先级与去重、启动器反推、命令拼装、`verify_ok` 四种失败分支、`--check` 不再误读源码），全库 25 个回归脚本全绿。
+
 ## v0.8.20：Hover Edition（靠近刻度放大，掠过清单即选中）
 
 用户截图用 1 标出右侧刻度、2 标出清单里的某一行，提出两件事：鼠标靠近刻度应该放大、离开缩回去；鼠标悬停在清单某行时应该能直接换行选择，像 WorkBuddy 的提问导航那样。

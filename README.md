@@ -2,7 +2,7 @@
 
 把 **GitHub Copilot Chat** 搬进 Spyder 6：侧栏对话、Agent 自动改代码、改动直接标成红绿行等你逐处接受。
 
-![version](https://img.shields.io/badge/version-0.8.20-blue)
+![version](https://img.shields.io/badge/version-0.8.21-blue)
 ![python](https://img.shields.io/badge/python-3.9%2B-blue)
 ![spyder](https://img.shields.io/badge/Spyder-6.x-8A2BE2)
 ![license](https://img.shields.io/badge/license-MIT-green)
@@ -28,7 +28,7 @@ error: connection-timeout
 
 配了清华 PyPI 镜像也没用——镜像只代理 PyPI 上的包，GitHub Release 的文件是 pip 直接去 `github.com` 取的，不经过镜像。jsDelivr 在国内有节点，实测可达。
 
-> 文件名里的 `-0-` 是故意的：pip 要求 wheel 名字形如 `名称-版本-py3-none-any.whl`，版本段写死才能让 URL 固定。真实版本在 wheel 内部的 METADATA 里，装完 `pip show` 显示的是真实版本（当前 0.8.20）。`--force-reinstall` 不能省：版本没变时 pip 会说「already installed with the same version」，加它才保证每次都取 CDN 上当前那份。刚发版后 CDN 可能有最多约 12 小时缓存，急着要新包就用下面的方式二。
+> 文件名里的 `-0-` 是故意的：pip 要求 wheel 名字形如 `名称-版本-py3-none-any.whl`，版本段写死才能让 URL 固定。真实版本在 wheel 内部的 METADATA 里，装完 `pip show` 显示的是真实版本（当前 0.8.21）。`--force-reinstall` 不能省：版本没变时 pip 会说「already installed with the same version」，加它才保证每次都取 CDN 上当前那份。刚发版后 CDN 可能有最多约 12 小时缓存，急着要新包就用下面的方式二。
 
 四个参数各有原因，别省：
 
@@ -85,9 +85,15 @@ ERROR: Cannot find command 'git' - do you have 'git' installed and in your PATH?
 2. **工具 → 偏好设置 → 插件 → Copilot Chat** 勾选启用。
 3. 回到面板，设置里选模型 provider。Copilot 走设备流授权；DeepSeek / OpenAI / Anthropic / Ollama 等填 API key；腾讯混元 Hy4 填 [TokenHub](https://console.cloud.tencent.com/tokenhub/apikey) 的 Key（见[腾讯混元 Hy4](#hunyuan)）。
 
-想确认装对了：`python -c "import spyder_copilot_chat as p; print(p.__version__, p.__file__)"`，路径里应该有 user site（Windows 是 `AppData\Roaming\Python\...`）；如果指到别的 Python 的 `Lib\site-packages`，Spyder 是看不见的，按上面加 `--user` 重装一次。
+想确认装对了，**别在项目根**直接 `python -c "import spyder_copilot_chat"`：当前目录会排进 `sys.path` 最前面，读到的其实是工作树里的源码，"版本对得上"根本不成立。用仓库自带的：
 
-升级时重跑同一条命令即可；卸载见下面的[卸载](#卸载)。
+```bash
+python scripts/install.py --check   # 实际生效的版本、路径、7 项能力符号，一屏看完
+```
+
+它会自动找到 Spyder 独立版的 `envs/spyder-runtime/python.exe`，并用 `-E` + 临时工作目录回读，绕开上面那个坑。没有仓库副本时，在任意空目录执行 `python -c "import spyder_copilot_chat as p; print(p.__version__, p.__file__)"`，路径里应该有 user site（Windows 是 `AppData\Roaming\Python\...`）；如果指到别的 Python 的 `Lib\site-packages`，Spyder 是看不见的，按上面加 `--user` 重装一次。
+
+升级时重跑同一条命令即可；仓库内有副本的话直接 `python scripts/install.py`——挑最高版本 wheel、装进正确的解释器、装完回读校验，对不上会以非零码退出。卸载见下面的[卸载](#卸载)。
 
 ## 卸载
 
@@ -335,6 +341,7 @@ rm -rf ~/.spyder_copilot_chat                                         # macOS / 
 - **过程面板的 Markdown 渲染** — 半截代码围栏不再把后续标题 / 列表 / 检查点吞成一张代码块卡片（v0.8.18）
 - **清单与刻度垂直居中** — 展开的消息清单对齐右侧刻度条中心，不再飘在面板顶部（v0.8.19）
 - **刻度悬停放大 / 掠过即选** — 靠近刻度梯度放大，清单里掠过某行直接选中并联动刻度（v0.8.20）
+- **安装自检** — `scripts/install.py` 把 wheel 装进 Spyder 真正在用的解释器，并回读版本与能力符号（v0.8.21）
 - **Plan 规划模式** — AI 先制定计划再逐步执行
 
 ## 自定义配置

@@ -33,6 +33,8 @@ from . import theme
 from spyder.api.widgets.main_widget import PluginMainWidget
 
 from ..auth import get_valid_copilot_token, load_tokens
+from .. import api_errors
+from ..api_errors import ApiError
 from ..copilot_client import (
     AGENT_TOOLS,
     TOOL_GROUP_READ, TOOL_GROUP_SEARCH, TOOL_GROUP_PLAN,
@@ -166,26 +168,15 @@ def _batch_may_write_blindly(tool_calls):
     return False
 
 
-def _format_api_error(exc):
-    """把网络/协议异常转成可读中文提示（GUI 线程只显示这些文案）"""
-    text = str(exc) or exc.__class__.__name__
-    low = text.lower()
-    if "api 401" in low or "api 403" in low or "unauthorized" in low:
-        return ("认证失败：Copilot 令牌无效或已过期。"
-                "请到设置里重新登录 GitHub Copilot。")
-    if "api 402" in low:
-        return "Copilot 额度已用尽（402）。请稍后重试，或升级订阅。"
-    if "api 429" in low:
-        return "请求过于频繁（429）。请稍等片刻再重试。"
-    if "api 400" in low or "api 404" in low or "api 422" in low:
-        return f"请求被服务端拒绝：{text[:300]}"
-    if "api 5" in low:
-        return "Copilot 服务端暂时不可用（5xx）。请稍后重试。"
-    if "network" in low or "urlopen" in low or "connection" in low:
-        return f"网络错误，无法连接服务端：{text[:300]}"
-    if "timed out" in low or "timeout" in low:
-        return "请求超时：网络较慢或服务端无响应，请检查网络后重试。"
-    return text[:500]
+def _format_api_error(exc, provider="", model=""):
+    """异常 → 一行结论（状态栏 / 审计用）。
+
+    v0.8.13 起真正的判断在 :mod:`spyder_copilot_chat.api_errors`：这里只
+    保留旧函数名，避免外部调用方（脚本、旧测试）一起改。旧实现拿
+    ``"api 402" in text`` 一把抓，把 DeepSeek 欠费说成「Copilot 额度已用尽，
+    请升级订阅」——方向完全错，用户照着修当然修不好。
+    """
+    return api_errors.summary_for(exc, provider=provider, model=model)
 
 
 def _brief_tool_args(raw, width=56):
@@ -708,6 +699,11 @@ class ProcessPane(QFrame):
         self._running = False
         self._waiting = False
         ProcessPane._live.discard(self)
+        # 失败要记在面板上，不能只影响这一次调用：紧接着 _finalize 还会
+        # 再用 failed=False 收一遍尾，不记住就会被折进「已完成」，用户
+        # 以为那一轮跑成功了。
+        if failed:
+            self._failed = True
         keep_open = failed or self._failed or self._user_toggled
         if self._btn.isChecked() and not keep_open:
             self._set_checked(False)
@@ -942,6 +938,16 @@ class MessageBubble(QFrame):
 
     # ── 代码块复制 ──────────────────────────────────────────────
     def _on_link(self, href):
+        if href.startswith(("http://", "https://")):
+            # 错误卡片里的充值 / Key 页面要能直接点开：让用户自己找
+            # platform.deepseek.com 的入口，比把 URL 抄进浏览器更靠谱
+            from qtpy.QtGui import QDesktopServices
+            from qtpy.QtCore import QUrl
+            try:
+                QDesktopServices.openUrl(QUrl(href))
+            except Exception:  # noqa: BLE001 - 没有默认浏览器时不该报错
+                logger.debug("open url failed: %s", href, exc_info=True)
+            return
         if not href.startswith("copilot-copy:"):
             return
         try:
@@ -1410,9 +1416,8 @@ class ChatWorker(QThread):
             elif p == "ollama": self._ollama()
             else: self._openai_compat()
         except Exception as e:
-            if not self._cancel:
-                logger.exception("Chat request failed")
-                self.error.emit(_format_api_error(e))
+            # 兜底：任何一条提供方分支漏了 try，也不能让异常逃出线程把 IDE 带崩
+            self._emit_error(e)
         finally:
             self._close_resp()
 
@@ -1446,9 +1451,16 @@ class ChatWorker(QThread):
             self._resp = urllib.request.urlopen(req, timeout=120)
             return self._resp
         except urllib.error.HTTPError as e:
-            error_body = e.read().decode("utf-8", errors="replace")[:1000]
-            logger.error("API %s: %s", e.code, error_body)
-            raise RuntimeError(f"API {e.code}: {error_body}")
+            try:
+                error_body = e.read().decode("utf-8", errors="replace")[:4000]
+            except Exception:  # noqa: BLE001 - 连接已被对端掐断
+                error_body = ""
+            # 抛结构化异常：状态码 + 原始错误体一起带走，交给 GUI 分类展示。
+            # 绝不在这里拼字符串——拼完就没法区分「DeepSeek 欠费」和
+            # 「Copilot 额度用完」，两者处置方式完全不同。
+            raise ApiError(e.code, error_body,
+                           provider=self.cfg.get("provider", ""),
+                           model=self.cfg.get("model", "")) from None
 
     def _flush_tool_calls(self):
         """发出累加完成的 tool_calls 并清空累加器"""
@@ -1586,11 +1598,25 @@ class ChatWorker(QThread):
             self._close_resp()
 
     def _emit_error(self, exc):
-        """统一把异常转成可读中文错误并 emit（取消时不提示）"""
+        """把异常归成「结论 + 步骤」卡片后 emit（取消时不提示）。
+
+        这里只发**成品卡片**（Markdown）：GUI 线程拿到就能画，不再做任何
+        判断——判断放在线程里，界面就不会因为文案问题抛异常。
+
+        日志刻意分成两级：``error`` 只写一行结论，traceback 降到 ``debug``。
+        旧实现用 ``logger.exception``，于是 Spyder 的内部控制台里是一整段
+        红色回溯，看起来跟 IDE 崩溃一模一样，实际只是账户没钱。
+        """
         if self._cancel:
             return
-        logger.warning("Chat error: %s", exc)
-        self.error.emit(_format_api_error(exc))
+        info = api_errors.classify(
+            exc, provider=self.cfg.get("provider", ""),
+            model=self.cfg.get("model", ""))
+        logger.error("Chat request failed: %s", api_errors.summary(info))
+        if not info.retryable:
+            logger.info("（%s 类错误不会自动重试，等用户处理）", info.kind)
+        logger.debug("failed request detail", exc_info=True)
+        self.error.emit(api_errors.card(info))
 
     def _copilot(self):
         """Copilot 聊天：统一走 copilot_client.chat_completion()
@@ -1602,7 +1628,9 @@ class ChatWorker(QThread):
             return
         token = get_valid_copilot_token()
         if not token:
-            self.error.emit("未登录 GitHub Copilot：请先在设置里登录 GitHub。")
+            self._emit_error(ApiError(
+                401, "", provider="copilot", model=self.cfg.get("model", ""),
+                message="未登录 GitHub Copilot：请先在设置里登录 GitHub。"))
             return
 
         from ..copilot_client import chat_completion
@@ -4301,16 +4329,43 @@ class CopilotChatPanel(QWidget):
         self._finalize()
 
     def _on_error(self, msg):
-        self._audit.log("error", message=str(msg)[:600])
-        self._flush_chunks()
-        if self._current_bubble:
-            self._current_bubble.set_content(f"**✕ 错误**：{msg}\n\n"
-                "请检查：\n"
-                "1. API Key 是否正确\n"
-                "2. 网络连接是否正常\n"
-                "3. Provider 配置是否正确")
-        self._set_status(f"✕ 错误：{msg[:50]}")
-        self._finalize()
+        """画错误卡片。整段包在 try 里：错误处理自己不许把界面带崩。
+
+        v0.8.13 之前这里固定拼三句「检查 API Key / 网络 / 配置」，不管
+        真实原因是什么——402 欠费也让人去查 Key。现在 payload 是线程算好
+        的卡片（结论 + 服务端原文 + 分步处置），界面只负责显示。
+        """
+        try:
+            payload = str(msg or "").strip()
+            if not payload:
+                return
+            if not api_errors.is_card(payload):
+                # 兼容旧调用方 / 第三方直接 emit 裸文本
+                payload = api_errors.card_for(
+                    text=payload, provider=self._config.get("provider", ""),
+                    model=self._config.get("model", ""))
+            self._audit.log("error", message=payload[:600])
+            self._flush_chunks()
+            bubble = self._current_bubble
+            if bubble is not None:
+                # 已经吐了半截回答就别覆盖——那段内容往往正是用户要的
+                if (bubble.get_content() or "").strip():
+                    bubble.commit_say()   # 半截正文先定性，卡片才不会插到它前面
+                    bubble.append_block(payload)
+                else:
+                    bubble.set_content(payload)
+                # 不管哪一支都要标失败：过程面板里可能记着「跑到哪一步」，
+                # 收尾时折成「已完成」会让人以为那一轮成功了。
+                bubble.finish_process(failed=True)
+            self._set_status(f"✕ {api_errors.status_line(payload)}")
+        except Exception:  # noqa: BLE001 - 画卡片失败也必须回到可用状态
+            logger.debug("error card rendering failed", exc_info=True)
+            try:
+                self._set_status("✕ 请求失败（详情见日志）")
+            except Exception:  # noqa: BLE001
+                pass
+        finally:
+            self._finalize()
 
     # ── Agent 工具调用 ──
 

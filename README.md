@@ -2,7 +2,7 @@
 
 把 **GitHub Copilot Chat** 搬进 Spyder 6：侧栏对话、Agent 自动改代码、改动直接标成红绿行等你逐处接受。
 
-![version](https://img.shields.io/badge/version-0.8.12-blue)
+![version](https://img.shields.io/badge/version-0.8.13-blue)
 ![python](https://img.shields.io/badge/python-3.9%2B-blue)
 ![spyder](https://img.shields.io/badge/Spyder-6.x-8A2BE2)
 ![license](https://img.shields.io/badge/license-MIT-green)
@@ -70,6 +70,16 @@ Spyder 独立安装包把自带环境目录设成只读 ACL，`pip` 默认会落
 危险操作（删除、危险命令）不参与批量批准，这时条上只写「还有 N 项危险操作」，必须回到卡片看过 diff 再逐项点。
 
 ![审批](docs/images/approval-bar-light.png)
+
+## 报错说人话
+
+请求失败时给的是卡片，不是一串 `API 402: {"error":...}`：第一行说清是什么问题（余额不足 / Key 失效 / 限流 / 模型名错 / 对话太长 / 连不上），第二行列出发请求用的提供方和模型，接着引用服务端原文，然后给两三条能照着做的步骤——该充值的给充值页链接，该换模型的告诉你去哪换。
+
+同一个状态码在不同服务商那里是两件事：402 在 DeepSeek 是「余额不足」，在 Copilot 才是「订阅额度用完」。旧版本一律报成后者，于是 DeepSeek 欠费的用户被要求去升级 Copilot 订阅。
+
+![402 余额不足](docs/images/api-error-402-card-dark.png)
+
+余额不足、Key 错、模型名错这类错误**不会自动重试**（重试一百次也还是不够钱），页脚会写明；限流、5xx、网络抖动才值得重试。已经吐出来的半截回答不会被错误文案覆盖，卡片接在后面。
 
 ## 字号与字体
 

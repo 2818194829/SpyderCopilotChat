@@ -2,6 +2,32 @@
 
 只记录对使用者有影响的变更。最新的在最上面。
 
+## v0.8.13：Honest Edition（API 出错时说人话）
+
+用户贴来的报错：
+
+```
+API 402: {"error":{"message":"Insufficient Balance (request_id: d5e85940-...)",
+"type":"insufficient_balance_error","code":"invalid_request_error"}}
+```
+
+界面上显示的是「Copilot 额度已用尽（402）。请稍后重试，或升级订阅」——**DeepSeek 账户欠费，却让人去升级 Copilot 订阅**。同时原始 JSON 连着 traceback 一起打进 Spyder 的内部控制台，一整段红字，看起来像 IDE 崩了。
+
+根因是错误处理只有一句 `if "api 402" in text`：状态码相同就当原因相同，把三家服务商的错误语义压成一条。充完钱重试才发现提示是错的，比不给提示更糟。
+
+| 改动 | 说明 |
+|---|---|
+| 分类 | 新增 `api_errors.py`：按状态码 + 错误体 + 提供方判成 余额不足 / Key 失效 / 限流 / 模型名错 / 超出上下文 / 内容策略 / 请求过大 / 服务端 / 网络 / 超时，并解析 `{"error":{"type","code","message"}}` 信封（DeepSeek 的 `insufficient_balance_error`、OpenAI 的 `invalid_api_key`、GitHub 的 `quota exceeded`） |
+| 措辞跟着提供方走 | 402 在 DeepSeek 是「余额不足，去 platform.deepseek.com 充值」，在 Copilot 才是「订阅额度用完，等下个周期或升级」 |
+| 气泡换成卡片 | 结论 → 提供方 · 模型 → 服务端原文引用 → 2~3 步处置 → 页脚（状态码 · 错误类型 · 会不会重试）。充值页 / API Keys 页是可点的链接，点了直接开浏览器 |
+| 不再吓人 | `logger.exception` 降为一行结论，traceback 只进 `debug`；内部控制台不再出现红色回溯，账户没钱不会再被看成 IDE 崩溃 |
+| 不覆盖答案 | 已经流出来的半截回答原样保留，错误卡片接在后面 |
+| 不白重试 | 余额、Key、模型名、4xx 一律不自动重试，页脚写明「不会自动重试」；只有限流 / 5xx / 网络抖动才值得重试 |
+| 兜底 | 分类函数对空错误体、网关 HTML、100KB JSON、控制字符都不抛异常；`_on_error` 整段 try/except，错误处理自己不许成为新的崩溃点 |
+| FIM | 补全的 402 提示同样按提供方改写（冷却 5 分钟不变），DeepSeek 用户不会再看到「Copilot 免费补全额度已用尽」 |
+
+新增 `test_v093.py` 57 项：分类（402/401/429/模型/超长/422/5xx/超时/断网）、措辞（DeepSeek 与 Copilot 的 402 不串台）、脏输入（空体、HTML 网关页、10 万字符）、`ApiError` 结构化字段、真实 402 端到端（本地 HTTP 服务 → `ChatWorker.run()` → 断言发出来的是卡片且不含 traceback）、卡片进 Markdown 渲染器不翻车。
+
 ## v0.8.12：Vision Edition（截图可以直接粘进输入框）
 
 以前输入框只认文字，剪贴板里的截图粘进去要么没反应、要么变成一个乱码方块。现在三种入口都能用：**Ctrl+V 粘贴截图**、**把图片文件拖进来**、**点输入区左下角的图钉按钮选文件**。

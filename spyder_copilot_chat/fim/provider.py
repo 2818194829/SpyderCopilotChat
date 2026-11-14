@@ -578,14 +578,29 @@ except Exception:  # pragma: no cover - 老版本 Spyder
 # ---------------------------------------------------------------------------
 
 _STATUS_MESSAGES = {
-    "auth": "Copilot 登录已失效，请在 Copilot Chat 设置中重新登录 GitHub",
-    "quota": "Copilot 免费补全额度已用尽（HTTP 402）",
-    "rate_limit": "Copilot 补全请求过于频繁，请稍后再试（HTTP 429）",
+    "auth": "登录已失效，请在 Copilot Chat 设置中重新登录",
+    "quota": "补全服务额度不足（HTTP 402），自动补全已暂停 5 分钟",
+    "rate_limit": "补全请求过于频繁，请稍后再试（HTTP 429）",
     "client_rejected": "Copilot 拒绝了当前客户端（HTTP 466），请检查协议头",
-    "subscription": "当前 GitHub 账号未开通 Copilot 补全服务",
-    "network": "无法连接 Copilot，请检查网络或代理设置",
+    "subscription": "当前账号未开通补全服务",
+    "network": "无法连接服务端，请检查网络或代理设置",
     "config": "FIM 后端未配置 API 地址 / API Key",
 }
+
+#: 402 的措辞随提供方变：Copilot 是订阅额度，DeepSeek 是钱包余额。
+_QUOTA_MESSAGES = {
+    "copilot": "Copilot 免费补全额度已用尽（HTTP 402），已暂停 5 分钟",
+    "deepseek": "DeepSeek 账户余额不足（HTTP 402），自动补全已暂停 5 分钟",
+    "openai": "OpenAI 额度不足（HTTP 402），自动补全已暂停 5 分钟",
+}
+
+
+def _status_message(error, provider=""):
+    """FIM 错误 → 一句人话。"""
+    if error == "quota":
+        key = str(provider or "").lower()
+        return _QUOTA_MESSAGES.get(key, _STATUS_MESSAGES["quota"])
+    return _STATUS_MESSAGES.get(error) or "补全请求失败（{0}）".format(error)
 
 
 class CopilotFimProvider(SpyderCompletionProvider):
@@ -851,9 +866,16 @@ class CopilotFimProvider(SpyderCompletionProvider):
         if not error:
             return
         now = time.time()
-        message = _STATUS_MESSAGES.get(error) or (
-            "Copilot FIM 请求失败（{0}）".format(error)
-        )
+        # 402 在 Copilot 是「订阅额度」，在 DeepSeek 是「余额」：措辞跟着
+        # 聊天面板的供应商走（FIM 自己的 provider 是归一化后的 copilot/openai，
+        # 分不出 DeepSeek 和 OpenAI）。
+        try:
+            provider = str(
+                _load_global_config().get("provider")
+                or self._conf("fim_provider", "auto") or "").lower()
+        except Exception:  # noqa: BLE001 - 取配置失败就用通用措辞
+            provider = ""
+        message = _status_message(error, provider)
         if error == "auth":
             if now - self._last_auth_clear > 15:
                 self._last_auth_clear = now
@@ -866,7 +888,7 @@ class CopilotFimProvider(SpyderCompletionProvider):
                 )
         elif error == "quota":
             self._quota_until = now + 300
-            logger.warning("Copilot FIM: 免费补全额度已用尽（402）")
+            logger.warning("Copilot FIM: 额度不足（402），冷却 5 分钟")
         elif error == "rate_limit":
             self._rate_limit_until = now + 10
             logger.info("Copilot FIM: 限流，冷却 10 秒（429）")

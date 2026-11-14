@@ -15,6 +15,8 @@
 pip install --upgrade "git+https://github.com/2818194829/SpyderCopilotChat.git"
 ```
 
+不想让 pip 现场构建的话，也可以从 [Releases](https://github.com/2818194829/SpyderCopilotChat/releases) 直接下 `.whl` 再 `pip install spydercopilotchat-0.8.3-py3-none-any.whl`，内容一模一样。
+
 Spyder 独立安装包把自带环境目录设成只读 ACL，`pip` 默认会落到 user site，**不需要管理员权限**，插件入口点也正是从那里被发现。
 
 装完按这个顺序：

@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "SpyderCopilotChat"
-version = "0.8.21"
+version = "0.8.22"
 description = "把 GitHub Copilot Chat 搬进 Spyder 6：侧栏对话、Agent 自动改代码、改动直接标成红绿行逐处接受"
 readme = {file = "README.md", content-type = "text/markdown"}
 requires-python = ">=3.9"

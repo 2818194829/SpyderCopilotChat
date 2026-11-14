@@ -22,6 +22,21 @@ jobs:
           python -m pip install --upgrade build
           python -m build
 
+      # README 里「一行装最新 Release」用的是 GitHub 的 latest 永久路径：
+      #   .../releases/latest/download/spydercopilotchat-0-py3-none-any.whl
+      # 该路径要求文件名逐字固定，而正常产物的名字里带真实版本号，所以每次
+      # 发版都额外挂一份固定名副本（同一批字节，仅文件名不同）。版本段写 0
+      # 只是让文件名合法，真实版本仍取自 wheel 内的 METADATA。
+      - name: 生成固定名副本
+        run: |
+          set -e
+          VERSION="${{ github.ref_name }}"
+          VERSION="${VERSION#v}"
+          WHEEL="dist/spydercopilotchat-${VERSION}-py3-none-any.whl"
+          test -f "$WHEEL" || { echo "wheel not found: $WHEEL"; ls -l dist; exit 1; }
+          cp "$WHEEL" dist/spydercopilotchat-0-py3-none-any.whl
+          ls -l dist/*.whl
+
       - name: 发布 Release
         uses: softprops/action-gh-release@v2
         with:
@@ -30,10 +45,10 @@ jobs:
             dist/*.tar.gz
           generate_release_notes: true
 
-      # README 里那条「一行装最新版」指向 jsDelivr 的 latest/ 固定路径。
-      # 文件名必须保持不变（版本段固定为 0，真实版本在 wheel 的 METADATA 里），
-      # 每次发版只覆盖内容，用户不用改命令。
-      - name: 同步固定下载链接
+      # 仓库内 latest/ 再留一份固定名副本：给 jsDelivr 这类直接读仓库文件的
+      # 加速通道用，也给没有网络时的仓库副本用。注意 CDN 有缓存，README 已把
+      # 主推路径换成 Releases 的 latest 直链，这里只作镜像。
+      - name: 同步仓库内固定链接
         run: |
           set -e
           git config user.name "github-actions[bot]"

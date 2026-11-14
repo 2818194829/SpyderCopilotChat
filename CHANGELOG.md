@@ -2,6 +2,32 @@
 
 只记录对使用者有影响的变更。最新的在最上面。
 
+## v0.8.22：Oneline Edition（一行命令直接取最新 Release）
+
+上一版把「装错版本」这件事变成了可检查的，这一版把「装到旧版本」的源头掐掉。
+
+### 安装命令换成 Releases 直链
+
+```bash
+python -m pip install --user --no-deps --upgrade --force-reinstall --no-cache-dir \
+  "https://github.com/2818194829/SpyderCopilotChat/releases/latest/download/spydercopilotchat-0-py3-none-any.whl"
+```
+
+- 旧命令指向 jsDelivr 的 `@main/latest/` 固定名 wheel，CDN 最多滞后约 12 小时。
+  装完 0.8.21 再重启又变回 0.8.13，就是这么来的：下载到了缓存里的旧包。
+- 新命令走 GitHub 自己的 `releases/latest/download/`，不经过任何第三方 CDN。
+- 为了让 latest 路径下的文件名恒定，`release.yml` 每次发版都会额外挂一份
+  `spydercopilotchat-0-py3-none-any.whl`（与带真实版本号那份字节相同）。
+- 命令补了 `--no-cache-dir`，pip 自己的 HTTP 缓存也不吃；`--force-reinstall`
+  仍留着——文件名里的版本段是 `0`，pip 会判定「已是最新」而直接跳过。
+
+### 其他
+
+- 仓库内 `latest/` 保留为镜像（给 jsDelivr 这类直接读仓库文件的通道），
+  但不再是 README 主推路径。
+- 新增 `tests/test_release_link.py`，把「workflow 必须产出固定名副本、
+  README 命令必须指向 releases/latest、参数不能缺、不能退回 CDN」变成断言。
+
 ## v0.8.21：Installer Edition（装完当场证明装对了）
 
 这次不是界面问题，是"装了但没生效"：Release 页有 0.8.20，`pip` 也打印

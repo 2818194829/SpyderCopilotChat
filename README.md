@@ -2,7 +2,7 @@
 
 把 **GitHub Copilot Chat** 搬进 Spyder 6：侧栏对话、Agent 自动改代码、改动直接标成红绿行等你逐处接受。
 
-![version](https://img.shields.io/badge/version-0.8.21-blue)
+![version](https://img.shields.io/badge/version-0.8.22-blue)
 ![python](https://img.shields.io/badge/python-3.9%2B-blue)
 ![spyder](https://img.shields.io/badge/Spyder-6.x-8A2BE2)
 ![license](https://img.shields.io/badge/license-MIT-green)
@@ -11,37 +11,51 @@
 
 ## 安装
 
-### 方式一：一行命令装最新版（推荐，不需要 Git，国内网络可用）
+### 方式一：一行命令装最新 Release（推荐，不需要 Git）
 
 ```bash
-python -m pip install --user --no-deps --upgrade --force-reinstall "https://cdn.jsdelivr.net/gh/2818194829/SpyderCopilotChat@main/latest/spydercopilotchat-0-py3-none-any.whl"
+python -m pip install --user --no-deps --upgrade --force-reinstall --no-cache-dir "https://github.com/2818194829/SpyderCopilotChat/releases/latest/download/spydercopilotchat-0-py3-none-any.whl"
 ```
 
-这条 URL **永远不变**：每次发版，发布流程会把新 wheel 覆盖到仓库的 `latest/` 目录，重跑同一行就是最新版。升级也是同一行。
+这条 URL 里没有版本号：`releases/latest` 由 GitHub 指向当前最新的那个 Release，
+`spydercopilotchat-0-py3-none-any.whl` 是每次发版都一并挂上的固定名副本——和同批的
+`spydercopilotchat-x.y.z-py3-none-any.whl` 字节完全一致，只是名字不同。所以升级还是这一行，
+不用去 Release 页找版本号。
 
-为什么不用 `github.com/.../releases/download/...`：那个域名在国内经常连不上，pip 会连试 5 次然后报
+为什么文件名里是 `0`：pip 只认 `名称-版本-py3-none-any.whl` 这种形状，版本段没法省略；
+而 GitHub 的 latest 路径又要求文件名逐字固定，所以发版时 CI 额外拷一份固定名的挂上去
+（见 `.github/workflows/release.yml`）。真正装上的版本取自 wheel 内部的 METADATA，
+`pip show SpyderCopilotChat` 显示的是真实版本（当前 0.8.22），不会真的变成 `0`。
 
-```text
-ConnectTimeoutError: Connection to github.com timed out. (connect timeout=15)
-error: connection-timeout
+`--force-reinstall` 和 `--no-cache-dir` 都别省：
+
+- `--force-reinstall`：pip 拿「已装的 0.8.21」和文件名里的 `0` 一比，会认为已经够新，直接跳过，什么都不装；
+- `--no-cache-dir`：绕开 pip 自己的 HTTP 缓存。早先 README 用的是 CDN 固定链接，缓存滞后把 0.8.21
+  覆盖回 0.8.13 过两次，现象就是「装完重启，右侧刻度又没了」。这条命令不再经过 CDN。
+
+github.com 连不上时（国内常见，pip 会报 `ConnectTimeoutError` 或 SSL 握手失败），给地址套一层加速前缀，其余原样：
+
+```bash
+python -m pip install --user --no-deps --upgrade --force-reinstall --no-cache-dir "https://gh-proxy.com/https://github.com/2818194829/SpyderCopilotChat/releases/latest/download/spydercopilotchat-0-py3-none-any.whl"
 ```
 
-配了清华 PyPI 镜像也没用——镜像只代理 PyPI 上的包，GitHub Release 的文件是 pip 直接去 `github.com` 取的，不经过镜像。jsDelivr 在国内有节点，实测可达。
+`gh-proxy.com` 是第三方服务，不保证长期可用；能直连 GitHub 就把前缀去掉。两条都慢就直接下文件，见下面的方式二。
 
-> 文件名里的 `-0-` 是故意的：pip 要求 wheel 名字形如 `名称-版本-py3-none-any.whl`，版本段写死才能让 URL 固定。真实版本在 wheel 内部的 METADATA 里，装完 `pip show` 显示的是真实版本（当前 0.8.21）。`--force-reinstall` 不能省：版本没变时 pip 会说「already installed with the same version」，加它才保证每次都取 CDN 上当前那份。刚发版后 CDN 可能有最多约 12 小时缓存，急着要新包就用下面的方式二。
+配清华 PyPI 镜像不能解决这个问题——镜像只代理 PyPI 上的包，GitHub Release 的文件是 pip 直接去取的，不经过镜像。这个包也没有发布到 PyPI（见文末说明）。
 
-四个参数各有原因，别省：
+这几个参数各有原因，别省：
 
 | 参数 | 为什么 |
 |---|---|
 | `--user` | Spyder 独立安装包的自带环境是只读的，插件必须落进 user site（`%APPDATA%\Python\Python3XX\site-packages`），Spyder 才能发现入口点。用系统 Python / Anaconda 装时若它自己的 site-packages 可写，pip 会装到那个 Python 的目录里，Spyder 根本看不见 |
 | `--no-deps` | `spyder` / `qtpy` / `requests` 由 Spyder 自带环境提供。若用别的 Python 装，pip 会为了满足 `spyder>=6.0` 把整套 Spyder + PyQt5 再拉一份进 user site；user site 优先级更高，会把 IDE 里的 Spyder 顶掉 |
-| `--upgrade` / `--force-reinstall` | 覆盖旧版；见上面关于固定版本名的说明 |
+| `--upgrade` / `--force-reinstall` | 覆盖旧版；理由见上面关于固定名 `0` 的说明 |
+| `--no-cache-dir` | 不吃 pip 的 HTTP 缓存，避免取到上一次下载的旧包 |
 
 更省事的是直接用 Spyder 自带的解释器（依赖它自己就有，不需要 `--no-deps`）：
 
 ```bash
-"<Spyder 安装目录>\envs\spyder-runtime\python.exe" -m pip install --user --upgrade --force-reinstall <上面的 CDN URL>
+"<Spyder 安装目录>\envs\spyder-runtime\python.exe" -m pip install --user --upgrade --force-reinstall --no-cache-dir <上面那条 URL>
 ```
 
 不需要管理员权限。
@@ -51,8 +65,10 @@ error: connection-timeout
 浏览器打开 [Releases](https://github.com/2818194829/SpyderCopilotChat/releases)，下最新版的 `.whl`，再：
 
 ```bash
-python -m pip install --user --no-deps --upgrade 下载路径\spydercopilotchat-x.y.z-py3-none-any.whl
+python -m pip install --user --no-deps --upgrade --force-reinstall 下载路径\spydercopilotchat-x.y.z-py3-none-any.whl
 ```
+
+每个 Release 里有两个 wheel：带真实版本号的，和固定名的 `spydercopilotchat-0-py3-none-any.whl`。两者字节相同，下一份就行。
 
 如果只是 `github.com` 连不上、但 `api.github.com` 通，PowerShell 里这一行会**自动查出最新版本号**再装（同一行，不写死版本）：
 
@@ -342,6 +358,7 @@ rm -rf ~/.spyder_copilot_chat                                         # macOS / 
 - **清单与刻度垂直居中** — 展开的消息清单对齐右侧刻度条中心，不再飘在面板顶部（v0.8.19）
 - **刻度悬停放大 / 掠过即选** — 靠近刻度梯度放大，清单里掠过某行直接选中并联动刻度（v0.8.20）
 - **安装自检** — `scripts/install.py` 把 wheel 装进 Spyder 真正在用的解释器，并回读版本与能力符号（v0.8.21）
+- **一行装最新版** — 安装命令改指 `releases/latest/download/`，不再受 CDN 缓存影响装回旧版（v0.8.22）
 - **Plan 规划模式** — AI 先制定计划再逐步执行
 
 ## 自定义配置

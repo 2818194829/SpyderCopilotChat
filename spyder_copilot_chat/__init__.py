@@ -573,10 +573,25 @@ v0.8.21 (installer)：一条命令装进 Spyder 真正在用的解释器，并�
     0.8.13；重新装入 0.8.20 后回读 7 项符号全部就位
   - 新增 test_v101.py 63 项，全库 25 脚本全绿
 
+v0.8.22 (oneline)：安装链接改指 Releases 的 latest 直链
+  - 现场：装完 0.8.21 重启，右侧刻度又没了、`pip show` 回到 0.8.13。
+    旧 README 那条一行命令指向 jsDelivr 的 @main/latest/ 固定名 wheel，
+    CDN 缓存最多滞后约 12 小时，于是把旧包原样盖回去，界面毫无提示
+  - 改法：一行命令换成 GitHub 自己的 releases/latest/download/ 永久路径，
+    不走任何 CDN；release.yml 每次发版额外挂一份固定名 wheel
+    （spydercopilotchat-0-py3-none-any.whl，与带版本号那份字节相同），
+    这样 latest 路径下永远有这个文件名
+  - 命令补 --no-cache-dir：pip 自身的 HTTP 缓存也不吃，避免再取到旧包；
+    --force-reinstall 保留，因为文件名里的版本段是 0，pip 会误判「已是最新」
+  - 仓库内 latest/ 保留为镜像（jsDelivr 等直接读仓库文件的通道），
+    但不再作为 README 主推路径
+  - 新增 test_release_link.py：校验 workflow 一定产出固定名副本、README
+    主推命令指向 releases/latest、参数齐全且没有退回 CDN
+
 """
 
-__version__ = "0.8.21"
-__edition__ = "installer"
+__version__ = "0.8.22"
+__edition__ = "oneline"
 
 # Spyder 把 stderr 的每一行都当成未处理异常弹「内部错误」窗口。包一加载
 # 就接管自己的日志出口，保证任何子模块 import 之前这条隔离已经生效。

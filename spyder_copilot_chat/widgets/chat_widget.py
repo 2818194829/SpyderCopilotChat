@@ -17,6 +17,7 @@ import logging
 import os
 import re
 import time
+import weakref
 
 from qtpy.QtCore import QPoint, Qt, Signal, QThread, QTimer, QSize
 from qtpy.QtGui import QTextCursor
@@ -357,15 +358,24 @@ class ProcessPane(QFrame):
 
     ``_user_toggled`` 是必须的：没有它，用户刚点开看细节，下一帧到达
     又会把面板收回去，交互会变得没法用。
+
+    v0.8.6 起计时用「累计 + 本次起点」而不是「结束时间 - 开始时间」：
+    等审批的时间要能停表（``pause`` / ``resume``），而单点时间戳减不出
+    停下来过多久。``_live`` 是所有还没收尾的面板，收尾时统一兜底停表——
+    只要有哪一个气泡被换掉时忘了收尾，它就会永远显示「正在处理」，
+    时间一直往上走（v0.8.5 实拍反馈）。
     """
+
+    _live = weakref.WeakSet()
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self._md = ""
         self._steps = 0
         self._running = False
-        self._started = None
-        self._elapsed = 0.0
+        self._waiting = False
+        self._run_since = None
+        self._accum = 0.0
         self._user_toggled = False
         self._rendered = False
         self._silent = False
@@ -420,26 +430,88 @@ class ProcessPane(QFrame):
 
     def _refresh_label(self):
         arrow = "\u25be" if self._btn.isChecked() else "\u25b8"
-        if self._running:
-            text = f"{arrow} 正在处理 {_fmt_dur(self._elapsed)}"
+        spent = _fmt_dur(self.elapsed())
+        if self._waiting:
+            text = f"{arrow} 等待批准 · 已用 {spent}"
+        elif self._running:
+            text = f"{arrow} 正在处理 {spent}"
         elif self._steps:
-            text = f"{arrow} 已完成 {_fmt_dur(self._elapsed)} · {self._steps} 步"
+            text = f"{arrow} 已完成 {spent} · {self._steps} 步"
         else:
-            text = f"{arrow} 已完成 {_fmt_dur(self._elapsed)}"
+            text = f"{arrow} 已完成 {spent}"
         self._btn.setText(text)
+
+    def elapsed(self):
+        """已消耗的秒数：停下来过多久不算进去。"""
+        if self._running and self._run_since is not None:
+            return self._accum + (time.monotonic() - self._run_since)
+        return self._accum
 
     # ── 生命周期 ──────────────────────────────────────────────
     def begin(self):
         """进入运行态：显示面板、开始计时、保证展开。"""
-        if self._started is None:
-            self._started = time.monotonic()
-        self._running = True
-        self._elapsed = time.monotonic() - self._started
+        if not self._running:
+            self._run_since = time.monotonic()
+            self._running = True
+            self._waiting = False
+            self._timer.start()
+            ProcessPane._live.add(self)
         self.setVisible(True)
         if not self._btn.isChecked() and not self._user_toggled:
             self._set_checked(True)
-        self._timer.start()
         self._refresh_label()
+
+    def pause(self):
+        """挂起（等用户批准）：停表，等批准的时间不算 Agent 的工时。"""
+        if not self._running:
+            return
+        if self._run_since is not None:
+            self._accum += time.monotonic() - self._run_since
+            self._run_since = None
+        self._running = False
+        self._waiting = True
+        self._timer.stop()
+        self._refresh_label()
+
+    def resume(self):
+        """批准后继续：从暂停处接着走表。"""
+        if self._running or not self._waiting:
+            return
+        self._run_since = time.monotonic()
+        self._running = True
+        self._waiting = False
+        self._timer.start()
+        ProcessPane._live.add(self)
+        self._refresh_label()
+
+    def finish(self, failed=False):
+        """任务结束：停表并按策略收起（用户手动展开过就尊重用户）。"""
+        if self._run_since is not None:
+            self._accum += time.monotonic() - self._run_since
+            self._run_since = None
+        self._timer.stop()
+        self._running = False
+        self._waiting = False
+        ProcessPane._live.discard(self)
+        keep_open = failed or self._failed or self._user_toggled
+        if self._btn.isChecked() and not keep_open:
+            self._set_checked(False)
+        self._refresh_label()
+
+    @classmethod
+    def finish_all(cls):
+        """把所有还没收尾的面板停表。
+
+        气泡被换掉（审批后另起一条、转向、异常分支）时，旧面板就再也
+        收不到 ``finish``：它停在「正在处理」，秒数一直涨。收尾入口统一
+        扫一遍，比在每个换气泡的地方各补一句可靠——漏一处就复发一次。
+        """
+        for pane in list(cls._live):
+            try:
+                pane.finish()
+            except RuntimeError:
+                # C++ 侧已被删除（清空会话时 deleteLater）
+                cls._live.discard(pane)
 
     def append(self, md):
         body = (md or "").strip("\n")
@@ -453,17 +525,6 @@ class ProcessPane(QFrame):
         self._steps += 1
         if self._btn.isChecked():
             self._render()
-        self._refresh_label()
-
-    def finish(self, failed=False):
-        """任务结束：停表并按策略收起（用户手动展开过就尊重用户）。"""
-        self._timer.stop()
-        self._running = False
-        if self._started is not None:
-            self._elapsed = time.monotonic() - self._started
-        keep_open = failed or self._failed or self._user_toggled
-        if self._btn.isChecked() and not keep_open:
-            self._set_checked(False)
         self._refresh_label()
 
     # ── 内部 ──────────────────────────────────────────────────
@@ -498,9 +559,10 @@ class ProcessPane(QFrame):
         self._fit()
 
     def _tick(self):
-        if self._started is None:
+        if not self._running:
+            # 防御：表停了就不该再有 tick，真来了也立刻收掉
+            self._timer.stop()
             return
-        self._elapsed = time.monotonic() - self._started
         self._refresh_label()
 
     def resizeEvent(self, event):
@@ -814,12 +876,23 @@ class MessageBubble(QFrame):
         self.archive_say()
         self._process.begin()
 
+    def pause_process(self):
+        """挂起等审批：钟先停，别把用户思考的时间算成 Agent 的工时。"""
+        self._process.pause()
+
+    def resume_process(self):
+        self._process.resume()
+
     def finish_process(self, failed=False):
         """这一轮结束：把尾部叙述定性为结论，停表并按策略收起。"""
-        self.commit_say()
-        self._view.setHtml(render_markdown(self._content))
-        self._adjust()
-        self._process.finish(failed=failed)
+        try:
+            self.commit_say()
+            self._view.setHtml(render_markdown(self._content))
+            self._adjust()
+        finally:
+            # 停表必须发生在 finally：渲染/排版抛异常时，面板会永远停在
+            # 「正在处理」，秒数一直往上走（v0.8.5 实拍的那个 bug）。
+            self._process.finish(failed=failed)
 
     def _flush_stream(self):
         """把这一帧的增量并入文档：已提交块拼接 + 尾块覆盖。"""
@@ -2625,6 +2698,9 @@ class CopilotChatPanel(QWidget):
 
     def _clear_ui(self):
         """清空界面上的所有气泡（含欢迎卡，由调用方决定是否重建）。"""
+        # 先停表再删控件：deleteLater 是延后执行的，中间这几帧定时器
+        # 还在跑，会对着要销毁的控件刷新文案。
+        ProcessPane.finish_all()
         while self._inner_lay.count() > 1:
             i = self._inner_lay.takeAt(0)
             if i.widget():
@@ -3558,6 +3634,10 @@ class CopilotChatPanel(QWidget):
         self._cancel_btn.setVisible(False)
         self._thinking_bar.setVisible(False)
         self._set_status(f"⏸ 等待批准 {len(tool_calls)} 项操作…")
+        # 挂起期间 Agent 什么都没干，钟必须停：否则「正在处理 3m12s」
+        # 会把用户看 diff 的时间算成模型思考时间。
+        if self._current_bubble:
+            self._current_bubble.pause_process()
         self._audit.log(
             "approval_requested", policy=self._approval_policy(),
             tools=[(tc.get("function") or {}).get("name", "") for tc in tool_calls],
@@ -3611,6 +3691,11 @@ class CopilotChatPanel(QWidget):
                 "⏸ 操作未获批准，已停止。请补充说明或直接给出新指令。")
             self._finalize()
             return
+        # 这一段（提请求 → 等批准）到此为止：后面另起气泡写答案。
+        # 旧面板必须先停表，否则它会永远停在「正在处理」——审批挂起时
+        # 本来就是暂停态，不收尾就没人再来收（v0.8.5 实拍反馈）。
+        if self._current_bubble:
+            self._current_bubble.finish_process()
         # 执行结果与后续 AI 回复排在审批卡片之后，形成 Cline 式时间线
         self._current_bubble = self._add_msg("assistant", "")
         self._execute_approved_tools(approved_calls, card=self._last_card)
@@ -4405,6 +4490,8 @@ class CopilotChatPanel(QWidget):
         self._flush_chunks()
         if self._current_bubble:
             self._current_bubble.end_stream()
+            # 转向会另起气泡，旧面板没人再收尾 —— 就地停表
+            self._current_bubble.finish_process()
         self._set_awaiting_approval(False)
         self._pending_card = None
         self._agent_active = False
@@ -4434,6 +4521,9 @@ class CopilotChatPanel(QWidget):
             self._current_bubble.end_stream()
             # v0.8.4：这一轮结束，过程面板停表并按策略收起
             self._current_bubble.finish_process()
+        # 兜底：本轮凡是被换掉 / 漏收尾的面板，一律停表。少了这一步，
+        # 任何一个「另起气泡」的分支都会留下一个永远在计时的面板。
+        ProcessPane.finish_all()
         self._current_bubble = None
         self._agent_active = False
         self._tc_handled = False

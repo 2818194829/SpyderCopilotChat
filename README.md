@@ -2,7 +2,7 @@
 
 把 **GitHub Copilot Chat** 搬进 Spyder 6：侧栏对话、Agent 自动改代码、改动直接标成红绿行等你逐处接受。
 
-![version](https://img.shields.io/badge/version-0.8.5-blue)
+![version](https://img.shields.io/badge/version-0.8.6-blue)
 ![python](https://img.shields.io/badge/python-3.9%2B-blue)
 ![spyder](https://img.shields.io/badge/Spyder-6.x-8A2BE2)
 ![license](https://img.shields.io/badge/license-MIT-green)
@@ -54,7 +54,10 @@ Spyder 独立安装包把自带环境目录设成只读 ACL，`pip` 默认会落
 
 折叠的前提不是 CSS，而是**归属**：一段叙述后面若还跟着工具调用，它属于过程；这一轮到此为止，它才是结论。所以折起来的是过程，答案始终留在外面。失败例外——过程里出现报错时保持展开，不让错误被折进「已完成」。
 
+计时只在 Agent 真正干活时走：挂起等你批准时停表（`▾ 等待批准 · 已用 1m23s`），一轮结束就定住，不会出现答案写完了秒数还在涨的情况。
+
 ![过程折叠](docs/images/process-expanded-light.png)
+![等待批准](docs/images/process-waiting-light.png)
 
 ## 审批
 

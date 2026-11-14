@@ -208,8 +208,186 @@ FONT_CHOICES = [
     ("等宽（Consolas）", "'Cascadia Code','Consolas',monospace"),
 ]
 
+#: 常见字族：（中文标签, 候选字族名）。
+#:
+#: 只写候选、不写死一个名字，是因为同一款字在不同系统上注册名不同：中文
+#: 环境的 Windows 报 ``宋体``、英文环境的 Windows 报 ``SimSun``、macOS 报
+#: ``Songti SC``。运行时去问 QFontDatabase，命中哪个就用哪个；一个都没装
+#: （或压根没有字体服务）就整项不出现——菜单里不摆点了没反应的东西。
+#:
+#: 已被 ``FONT_CHOICES`` 那四条预设覆盖的字族（微软雅黑 / 思源 / Consolas）
+#: 不再重复列，去重逻辑在 :func:`common_font_choices` 里兜底。
+COMMON_FONTS = [
+    ("宋体", ("SimSun", "宋体", "Songti SC", "STSong")),
+    ("黑体", ("SimHei", "黑体", "Heiti SC", "STHeiti")),
+    ("楷体", ("KaiTi", "楷体", "Kaiti SC")),
+    ("仿宋", ("FangSong", "仿宋", "Fangsong SC")),
+    ("等线", ("DengXian", "等线")),
+    ("等线 Light", ("DengXian Light", "等线 Light")),
+    ("幼圆", ("YouYuan", "幼圆")),
+    ("隶书", ("LiSu", "隶书")),
+    ("华文宋体", ("STSong", "华文宋体")),
+    ("华文楷体", ("STKaiti", "华文楷体")),
+    ("华文细黑", ("STXihei", "华文细黑")),
+    ("等距更纱黑体 SC", ("Sarasa Mono SC", "Sarasa Gothic SC", "等距更纱黑体 SC")),
+    ("JetBrains Mono", ("JetBrains Mono",)),
+    ("Fira Code", ("Fira Code",)),
+    ("Source Code Pro", ("Source Code Pro",)),
+    ("Courier New", ("Courier New",)),
+]
+
+#: 同一款字的不同注册名。中文环境的 Windows 只报「微软雅黑」，英文名
+#: ``Microsoft YaHei`` 在字体表里根本不存在；反过来英文环境也不认中文名。
+#: 这里把等价的名字串成一组，匹配时任一组员命中就算命中——预设里写的
+#: 英文名因此能落到中文注册的那款字上，不必为每种语言各写一份预设。
+FAMILY_ALIAS_GROUPS = [
+    ("Microsoft YaHei", "Microsoft YaHei UI", "微软雅黑"),
+    ("Microsoft YaHei Light", "微软雅黑 Light"),
+    ("Microsoft JhengHei", "微軟正黑體"),
+    ("SimSun", "宋体"),
+    ("NSimSun", "新宋体"),
+    ("SimHei", "黑体"),
+    ("KaiTi", "楷体", "Kaiti SC"),
+    ("FangSong", "仿宋", "Fangsong SC"),
+    ("DengXian", "等线"),
+    ("DengXian Light", "等线 Light"),
+    ("YouYuan", "幼圆"),
+    ("LiSu", "隶书"),
+    ("STSong", "华文宋体"),
+    ("STKaiti", "华文楷体"),
+    ("STXihei", "华文细黑"),
+    ("PingFang SC", "苹方-简"),
+    ("Source Han Sans SC", "Noto Sans CJK SC", "Noto Sans SC", "思源黑体"),
+    ("Consolas", "Consolas Ligaturized"),
+    ("Sarasa Mono SC", "Sarasa Gothic SC", "等距更纱黑体 SC"),
+]
+
 #: 正文字号档位：面板里的 Aa 菜单和滚轮缩放都按这张表走。
 FONT_STEPS = [12, 13, 14, 15, 16, 18, 20, 22, 24, 28, 32, 36]
+
+_FAMILY_CACHE = []
+_FAMILY_MAP = {}
+
+
+def _family_key(name):
+    """字族名的比较键：忽略大小写、空格、下划线与连字符。"""
+    return re.sub(r"[\s_\-]+", "", (name or "").strip().lower())
+
+
+#: 比较键 → 同组全部比较键（含自身）。别名在模块加载时展开一次。
+_ALIAS_INDEX = {}
+for _group in FAMILY_ALIAS_GROUPS:
+    _keys = {_family_key(n) for n in _group}
+    for _k in _keys:
+        _ALIAS_INDEX.setdefault(_k, set()).update(_keys)
+del _group, _keys, _k
+
+
+def _family_keys(name):
+    """一个字族名连同它的别名，全部比较键。"""
+    key = _family_key(name)
+    return {key} | _ALIAS_INDEX.get(key, set())
+
+
+def _preset_family_keys():
+    keys = set()
+    for _label, value in FONT_CHOICES:
+        for part in (value or "").split(","):
+            part = part.strip().strip("'\"")
+            if part and part not in ("sans-serif", "monospace", "serif"):
+                keys |= _family_keys(part)
+    return keys
+
+
+def installed_families(refresh=False):
+    """当前系统已安装的字族，按名字排序。
+
+    ``QFontDatabase`` 需要一个活着的 ``QGuiApplication``；离屏/无字体的
+    环境里拿不到就返回空列表，调用方据此把整组选项藏起来，而不是崩掉。
+    结果缓存一次——扫描字体表在 Windows 上要几十毫秒，而菜单是点开就要弹的。
+    """
+    global _FAMILY_CACHE, _FAMILY_MAP
+    if _FAMILY_CACHE and not refresh:
+        return list(_FAMILY_CACHE)
+    names = []
+    try:
+        from qtpy.QtGui import QFontDatabase
+        try:
+            # Qt5 里 families() 是实例方法，直接 ``QFontDatabase.families()``
+            # 会抛 TypeError（unbound method）；Qt6 才改成静态。两种都照顾到。
+            names = [str(f).strip() for f in QFontDatabase().families()]
+        except Exception:
+            names = [str(f).strip() for f in QFontDatabase.families()]
+    except Exception:  # pragma: no cover - 无字体服务时
+        names = []
+    uniq = {}
+    for name in names:
+        if name:
+            uniq.setdefault(_family_key(name), name)
+    _FAMILY_MAP = uniq
+    _FAMILY_CACHE = sorted(uniq.values(), key=lambda s: s.lower())
+    return list(_FAMILY_CACHE)
+
+
+def resolve_family(candidates):
+    """候选名 → 系统里真实注册的那个名字；都没装则返回空串。
+
+    先按原名查，再按别名组查：中文 Windows 把 ``Microsoft YaHei`` 注册成
+    「微软雅黑」，不展开别名就永远命中不了。
+    """
+    installed_families()
+    for name in candidates:
+        real = _FAMILY_MAP.get(_family_key(name))
+        if real:
+            return real
+        for key in _ALIAS_INDEX.get(_family_key(name), ()):
+            real = _FAMILY_MAP.get(key)
+            if real:
+                return real
+    return ""
+
+
+def css_family(name):
+    """单个字族名 → QSS 写法（加引号，去掉会破坏字符串的引号字符）。"""
+    name = (name or "").strip().replace("'", "").replace('"', "")
+    return "'" + name + "'" if name else ""
+
+
+def common_font_choices():
+    """[(标签, 真实字族名, 写入配置的值)]，只含本机真装了的字族。
+
+    与 ``FONT_CHOICES`` 里已覆盖的字族去重——比的是**候选名**而不是解析
+    结果，否则预设写 ``Microsoft YaHei``、系统报 ``微软雅黑`` 时会漏判，
+    菜单里就出现两个"微软雅黑"。
+    """
+    shown = _preset_family_keys()
+    out = []
+    for label, candidates in COMMON_FONTS:
+        keys = set()
+        for cand in candidates:
+            keys |= _family_keys(cand)
+        if keys & shown:
+            continue
+        real = resolve_family(candidates)
+        if not real:
+            continue
+        shown |= _family_keys(real)
+        out.append((label, real, css_family(real)))
+    return out
+
+
+def font_choices():
+    """预设 + 已装的常见字体。设置页下拉和 Aa 菜单共用这一份。"""
+    return list(FONT_CHOICES) + [(label, value)
+                                 for label, _family, value in common_font_choices()]
+
+
+def other_families():
+    """除上面已摆出来的之外，系统里还剩的字族（菜单的"全部字体"用）。"""
+    shown = _preset_family_keys()
+    for _label, family, _value in common_font_choices():
+        shown |= _family_keys(family)
+    return [f for f in installed_families() if _family_key(f) not in shown]
 
 TOOL_DENSITY_CHOICES = [
     ("Compact — 只留结果", "compact"),
@@ -257,9 +435,16 @@ class Theme(object):
         self.ui_font = int(ui_font)
         self.body_font = int(body_font)
         # 字体族：QSS 用整串（带引号和回退栈），QFont 用第一个可用名字。
+        # "可用"要真去字体表里问一次：中文环境的 Windows 只注册了「微软雅黑」，
+        # 预设里写的 'Microsoft YaHei' 在 QFont 上直接落空，等于没设。
         self.font_family = (font_family or "").strip() or _FONT_UI
-        first = self.font_family.split(",")[0].strip().strip("'\"")
-        self.font_family_name = first if first != _FONT_UI else ""
+        stacked = [p.strip().strip("'\"") for p in self.font_family.split(",")]
+        stacked = [p for p in stacked
+                   if p and p not in ("sans-serif", "monospace", "serif")]
+        if stacked and self.font_family != _FONT_UI:
+            self.font_family_name = resolve_family(stacked) or stacked[0]
+        else:
+            self.font_family_name = ""
 
     def __getitem__(self, key):
         return self._t[key]

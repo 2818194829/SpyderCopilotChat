@@ -2751,8 +2751,11 @@ class CopilotChatPanel(QWidget):
     def _set_font_family(self, family):
         self._persist_font(font_family=family or "")
         self._apply_font_now()
-        label = next((lbl for lbl, val in theme.FONT_CHOICES
-                      if val == (family or "")), family or "跟随系统")
+        label = next((lbl for lbl, val in theme.font_choices()
+                      if val == (family or "")), "")
+        if not label:
+            # 从"全部字体"里挑的具体字族没有中文标签，直接显示字族名
+            label = (family or "").strip("'\"") or "跟随系统"
         self._set_status(f"字体：{label}")
 
     def _reset_fonts(self):
@@ -2762,9 +2765,23 @@ class CopilotChatPanel(QWidget):
 
     def _popup_font_menu(self, *_args):
         """顶栏 Aa：重建菜单再弹（档位与勾选状态每次都现算）。"""
-        menu = getattr(self, "_font_menu", None)
+        menu = self._build_font_menu()
         if menu is None:
             return
+        btn = getattr(self, "_font_btn", None)
+        if btn is not None:
+            menu.popup(btn.mapToGlobal(QPoint(0, btn.height() + 4)))
+        else:
+            menu.popup(QCursor.pos())
+
+    def _build_font_menu(self):
+        """把 Aa 菜单的内容重建一遍，返回菜单本身（不弹）。
+
+        拆出来是为了能测：弹窗会开事件循环，测试里只想看条目和勾选状态。
+        """
+        menu = getattr(self, "_font_menu", None)
+        if menu is None:
+            return None
         menu.clear()
         t = theme.current_theme()
         icon = lambda name: theme.make_icon(name, t["text_muted"])  # noqa: E731
@@ -2796,6 +2813,8 @@ class CopilotChatPanel(QWidget):
         sub = menu.addMenu("字体")
         theme.style_popup(sub, t)
         cur_family = str(self._config.get("font_family", "") or "")
+        # v0.8.23：预设之外再把系统里真装了的字体列出来（宋体、楷体、仿宋…），
+        # 每条用自己的字形渲染——点开就能看出差别，不用选了再回头比对。
         for label, value in theme.FONT_CHOICES:
             act = sub.addAction(label)
             act.setCheckable(True)
@@ -2803,15 +2822,37 @@ class CopilotChatPanel(QWidget):
             act.triggered.connect(
                 lambda _c=False, v=value: self._set_font_family(v))
 
+        common = theme.common_font_choices()
+        if common:
+            sub.addSeparator()
+            for label, family, value in common:
+                act = sub.addAction(label)
+                act.setCheckable(True)
+                act.setChecked(value == cur_family)
+                act.setFont(QFont(family))
+                act.triggered.connect(
+                    lambda _c=False, v=value: self._set_font_family(v))
+
+        # 剩下的是系统字体表里的全部家族。数量可能上百，收进二级菜单：
+        # QMenu 自己会滚动，找起来比塞进第一层好得多。
+        others = theme.other_families()
+        if others:
+            sub.addSeparator()
+            more = sub.addMenu("全部字体（{0}）".format(len(others)))
+            theme.style_popup(more, t)
+            for family in others:
+                value = theme.css_family(family)
+                act = more.addAction(family)
+                act.setCheckable(True)
+                act.setChecked(value == cur_family)
+                act.setFont(QFont(family))
+                act.triggered.connect(
+                    lambda _c=False, v=value: self._set_font_family(v))
+
         menu.addSeparator()
         reset = menu.addAction("恢复默认（正文 14 / 界面 13）")
         reset.triggered.connect(self._reset_fonts)
-
-        btn = getattr(self, "_font_btn", None)
-        if btn is not None:
-            menu.popup(btn.mapToGlobal(QPoint(0, btn.height() + 4)))
-        else:
-            menu.popup(QCursor.pos())
+        return menu
 
     def _install_font_shortcuts(self):
         """Ctrl+= / Ctrl+- / Ctrl+0。

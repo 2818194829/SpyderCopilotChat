@@ -2,7 +2,7 @@
 
 把 **GitHub Copilot Chat** 搬进 Spyder 6：侧栏对话、Agent 自动改代码、改动直接标成红绿行等你逐处接受。
 
-![version](https://img.shields.io/badge/version-0.8.22-blue)
+![version](https://img.shields.io/badge/version-0.8.23-blue)
 ![python](https://img.shields.io/badge/python-3.9%2B-blue)
 ![spyder](https://img.shields.io/badge/Spyder-6.x-8A2BE2)
 ![license](https://img.shields.io/badge/license-MIT-green)
@@ -25,7 +25,7 @@ python -m pip install --user --no-deps --upgrade --force-reinstall --no-cache-di
 为什么文件名里是 `0`：pip 只认 `名称-版本-py3-none-any.whl` 这种形状，版本段没法省略；
 而 GitHub 的 latest 路径又要求文件名逐字固定，所以发版时 CI 额外拷一份固定名的挂上去
 （见 `.github/workflows/release.yml`）。真正装上的版本取自 wheel 内部的 METADATA，
-`pip show SpyderCopilotChat` 显示的是真实版本（当前 0.8.22），不会真的变成 `0`。
+`pip show SpyderCopilotChat` 显示的是真实版本（当前 0.8.23），不会真的变成 `0`。
 
 `--force-reinstall` 和 `--no-cache-dir` 都别省：
 
@@ -228,9 +228,15 @@ rm -rf ~/.spyder_copilot_chat                                         # macOS / 
 
 ## 字号与字体
 
-顶栏的 **A** 按钮（或 `Ctrl+=` / `Ctrl+-` / `Ctrl+0`，也可以在对话流里 **Ctrl + 滚轮**）直接调正文字号，档位 12–36px；菜单里还能单独调界面字号、换字体族（系统 / 雅黑 / 思源黑体 / 等宽）。改完立即重排已有消息并写进 `config.json`，重启后保持。
+顶栏的 **A** 按钮（或 `Ctrl+=` / `Ctrl+-` / `Ctrl+0`，也可以在对话流里 **Ctrl + 滚轮**）直接调正文字号，档位 12–36px；菜单里还能单独调界面字号、换字体。改完立即重排已有消息并写进 `config.json`，重启后保持。
 
 ![字号对比](docs/images/font-size-compare-dark.png)
+
+字体分两层（v0.8.23 起）：上面四条**预设**（系统 / 雅黑 / 思源黑体 / 等宽）负责快速切换；下面列出**本机真装了的**常见中文字体——宋体、黑体、楷体、仿宋、等线、幼圆、隶书、华文系列等，每条都用自己的字形渲染，点开就能看出差别；再往下是「全部字体」，把系统字体的完整列表收进二级菜单。
+
+![字体菜单](docs/images/font-submenu-dark.png)
+
+只列装了的，是因为"点了没反应"比"没有这一项"更糟；预设里写的是英文名（`Microsoft YaHei`），在中文 Windows 上会解析成实际注册的「微软雅黑」，不会被当成一个不存在的字族悄悄忽略。
 
 `font_size` 是正文，`ui_font_size` 是顶栏、按钮、状态行，`font_family` 是字族（空 = 跟随系统）。代码块始终用等宽字体，不受 `font_family` 影响。
 
@@ -359,6 +365,7 @@ rm -rf ~/.spyder_copilot_chat                                         # macOS / 
 - **刻度悬停放大 / 掠过即选** — 靠近刻度梯度放大，清单里掠过某行直接选中并联动刻度（v0.8.20）
 - **安装自检** — `scripts/install.py` 把 wheel 装进 Spyder 真正在用的解释器，并回读版本与能力符号（v0.8.21）
 - **一行装最新版** — 安装命令改指 `releases/latest/download/`，不再受 CDN 缓存影响装回旧版（v0.8.22）
+- **字体类型可选** — Aa 菜单里列出本机已装的宋体/楷体/仿宋等，另有「全部字体」二级菜单（v0.8.23）
 - **Plan 规划模式** — AI 先制定计划再逐步执行
 
 ## 自定义配置

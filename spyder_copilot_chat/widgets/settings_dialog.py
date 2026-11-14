@@ -1446,10 +1446,13 @@ class SettingsDialog(QDialog):
         form.addRow("界面字体大小:", self._ui_font_size_spin)
 
         self._font_family = QComboBox()
-        for label, value in theme.FONT_CHOICES:
+        # v0.8.23：预设 + 本机真装了的常见字体（宋体/楷体/仿宋…）。
+        # 只列装了的，避免选完发现没变化。
+        for label, value in theme.font_choices():
             self._font_family.addItem(label, value)
         self._font_family.setToolTip(
-            "正文与界面使用的字体族。代码块始终用等宽字体，不受这里影响。")
+            "正文与界面使用的字体族。列表里是本机已安装的字体；"
+            "代码块始终用等宽字体，不受这里影响。")
         form.addRow("字体:", self._font_family)
         lay.addLayout(form)
 
@@ -1584,6 +1587,21 @@ class SettingsDialog(QDialog):
             # 缓存为空时后台拉取一次，避免打开设置页就卡住
             if not _MODELS_CACHE["models"]:
                 self._refresh_models_async(manual=False)
+
+    def _select_font_family(self, value):
+        """把配置里的字族落到下拉上；列表里没有就补一条，别让选择凭空消失。
+
+        列表只列「本机已装」的字体，所以换机器打开配置、或卸载了那款字之后，
+        存着的值可能找不到对应项。这时老代码会静默停在第一项，用户再点确定
+        就把字体悄悄改回默认了——这里补一条「（当前）」并选中它。
+        """
+        value = value or ""
+        idx = self._font_family.findData(value)
+        if idx < 0:
+            label = value.strip("'\"") or "跟随系统"
+            self._font_family.addItem(label + "（当前）", value)
+            idx = self._font_family.count() - 1
+        self._font_family.setCurrentIndex(idx)
 
     def _on_thinking_changed(self, idx=None):
         """思考强度仅在支持 thinking 的 Provider + 思考模式开启时可编辑。"""
@@ -1765,11 +1783,11 @@ class SettingsDialog(QDialog):
                 (self._ui_theme, "ui_theme", "auto"),
                 (self._ui_accent, "ui_accent", theme.DEFAULT_ACCENT),
                 (self._ui_density, "ui_density", "comfortable"),
-                (self._tool_density, "tool_density", "balanced"),
-                (self._font_family, "font_family", "")):
+                (self._tool_density, "tool_density", "balanced")):
             idx = combo.findData(self._config.get(key, default))
             if idx >= 0:
                 combo.setCurrentIndex(idx)
+        self._select_font_family(self._config.get("font_family", ""))
         self._agent_enabled.setChecked(self._config.get("agent_mode", True))
         self._auto_execute.setChecked(self._config.get("auto_execute", False))
         mode_idx = self._default_mode.findData(

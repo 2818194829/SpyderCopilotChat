@@ -105,6 +105,17 @@ _KEYS = {
 # 错误体解析
 # ---------------------------------------------------------------------------
 
+# 「model hy4 not found」这类措辞把模型名夹在 model 和 not found 中间，
+# 精确短语匹配不到。放在 _MARKERS 之后做正则兜底：余额 / 鉴权 / 未开通等
+# 更具体的关键词仍然优先，避免把 402「model service is not activated」
+# 又抢回「模型名写错」。
+_MODEL_RE = re.compile(
+    r"\bmodel\b[\w\-.\s]{0,40}?"
+    r"(?:not\s+(?:found|exist|available|supported|activated)|"
+    r"does\s+not\s+exist|is\s+not\s+(?:available|supported)|"
+    r"unknown|unsupported|invalid)",
+    re.I)
+
 _STATUS_RE = re.compile(
     r"\b(?:api|http|status(?:\s*code)?|error\s*code)\D{0,4}(\d{3})\b", re.I)
 _TAG_RE = re.compile(r"<[^>]{0,200}>")
@@ -314,6 +325,8 @@ def _kind_from_markers(blob):
         for word in words:
             if word in blob:
                 return kind
+    if _MODEL_RE.search(blob):
+        return MODEL
     return ""
 
 
@@ -392,6 +405,11 @@ def classify(exc=None, *, text="", status=0, body="", provider="", model=""):
             or _kind_from_markers(blob) \
             or _kind_from_status(status, blob) \
             or UNKNOWN
+        # TokenHub 用 402 表达「模型服务未开通 / 额度不足」，但错误体常写成
+        # "model hy4 does not exist" / "model not found"，会被 MODEL markers
+        # 抢先判成「模型名写错」——用户照着改名字永远修不好。402 语义优先。
+        if provider == "hunyuan" and status == 402 and kind == MODEL:
+            kind = BALANCE
         return _build(kind, status, provider, model, detail, code)
     except Exception:  # noqa: BLE001 - 兜底：分类失败就报原文
         return ApiErrorInfo(kind=UNKNOWN, status=int(status or 0),
@@ -433,6 +451,9 @@ def _summary(kind, label, model, status, named=True, provider=""):
     if kind == RATE_LIMIT:
         return f"{label} 判定请求过快，已限流"
     if kind == MODEL:
+        if provider == "hunyuan":
+            return (f"模型「{model or '未指定'}」在 {label} 上不可用："
+                    "多半是控制台还没开通这个模型服务，或 Key 与地址的地域不一致")
         return f"模型「{model or '未指定'}」在 {label} 上不可用"
     if kind == CONTEXT:
         return "这轮对话（含工具输出、附件）超过了模型的上下文窗口"
@@ -523,10 +544,16 @@ def _steps(kind, provider, label, model):
             "开启思考模式 + 长上下文时单次占用更高，更容易撞上限流",
         )
     if kind == MODEL:
+        if provider == "hunyuan":
+            return (
+                "先到 TokenHub 控制台确认「hy4 / hy4-preview」模型服务**已开通**："
+                "没开通时服务端会直接报「模型不存在」，改模型名是修不好的",
+                "确认 API 地址与 Key 属于同一地域——广州 / 新加坡 / 硅谷各自"
+                "签发 Key，地域不匹配常把「没权限」报成模型不可用",
+                "用 GET /v1/models 看这个地域真正上线的模型名，再照抄进设置里",
+            )
         known = {
             "deepseek": "DeepSeek 当前可用：deepseek-flash、deepseek-v4-pro",
-            "hunyuan": "TokenHub 当前可用：hy4、hy4-preview；"
-                       "先用 GET /v1/models 看这个地域真正上线的模型",
         }
         return (
             f"设置 → 模型里填 {label} 确实提供的模型名（大小写、版本号都要一致）",
@@ -583,6 +610,9 @@ def _steps(kind, provider, label, model):
 def _links(kind, provider):
     if kind == BALANCE and provider in _TOPUP:
         return (_TOPUP[provider],)
+    if kind == MODEL and provider == "hunyuan":
+        # 「模型不可用」在 TokenHub 多半要回控制台开通，不是改名字
+        return (_TOPUP["hunyuan"], _KEYS["hunyuan"])
     if kind == AUTH and provider == "copilot":
         return (("GitHub 登录", "https://github.com/login"),)
     if kind == AUTH and provider in _KEYS:
@@ -619,6 +649,12 @@ def card(info, show_detail=True):
         lines.append("**怎么办**")
         for index, step in enumerate(info.steps, 1):
             lines.append(f"{index}. {step}")
+    # v0.8.15：links 字段此前一直没被渲染，充值页 / Key 页 / 控制台入口
+    # 全是死数据。这里补成一行短链接，气泡里能直接点开。
+    if info.links:
+        lines.append("")
+        lines.append(" · ".join(
+            _md_link(label, url) for label, url in info.links if label))
     tail = f"HTTP {info.status}" if info.status else info.kind
     if info.code:
         tail += f" · {info.code}"

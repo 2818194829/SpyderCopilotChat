@@ -211,7 +211,7 @@ class _BackgroundTask(QRunnable):
         try:
             payload = self._fn()
         except Exception as exc:
-            logger.exception("后台任务失败")
+            logger.warning("后台任务失败: %s", exc)
             payload = {"__error__": str(exc)}
         try:
             self._signals.finished.emit(payload)
@@ -286,13 +286,13 @@ def execute_tool_batch(tool_calls, base_dir, snapshot=None, cancel_event=None,
                 result = handle_meta_tool(name, args, base_dir, cfg)
                 error = ""
             except Exception as exc:
-                logger.exception("元工具执行失败")
+                logger.warning("元工具执行失败: %s", exc)
                 result, error = "", f"元工具 {name} 执行失败: {exc}"
         else:
             try:
                 tool_id, result, error = execute_tool(tc, base_dir=base_dir)
             except Exception as exc:
-                logger.exception("工具执行异常")
+                logger.warning("工具执行异常: %s", exc)
                 result, error = "", f"工具执行异常: {exc}"
 
         if audit is not None:

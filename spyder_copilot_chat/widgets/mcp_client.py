@@ -95,7 +95,7 @@ class MCPClient:
 
         cmd = [self._config.get("command", "")]
         if not cmd[0]:
-            logger.error("MCP server %s: no command specified", self.name)
+            logger.warning("MCP server %s: no command specified", self.name)
             return False
 
         cmd.extend(self._config.get("args", []))
@@ -127,7 +127,7 @@ class MCPClient:
                 self.stop()
                 return False
         except Exception as e:
-            logger.error("Failed to start MCP server %s: %s", self.name, e)
+            logger.warning("Failed to start MCP server %s: %s", self.name, e)
             return False
 
     def stop(self):
@@ -186,11 +186,11 @@ class MCPClient:
 
                 response = json.loads(response_line.decode("utf-8"))
                 if "error" in response:
-                    logger.error("MCP error: %s", response["error"])
+                    logger.warning("MCP error: %s", response["error"])
                     return None
                 return response.get("result", {})
             except Exception as e:
-                logger.error("MCP request failed: %s", e)
+                logger.warning("MCP request failed: %s", e)
                 return None
 
     def list_tools(self):

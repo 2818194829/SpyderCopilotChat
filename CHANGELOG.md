@@ -2,6 +2,22 @@
 
 只记录对使用者有影响的变更。最新的在最上面。
 
+## v0.8.15：Quiet Edition（API 出错不再弹 IDE 崩溃窗口）
+
+反馈是「选了 Hy4 发消息，Spyder 弹出『Spyder遇到了内部错误！』问题报告框」，报告正文是 `Chat request failed: 模型「hy4」在 腾讯混元 TokenHub 上不可用`。**进程没崩**：Spyder 6 把 `sys.stderr` 重定向到内部控制台，`spyder/plugins/console/widgets/console.py` 对 error 流的每一行执行 `sig_exception_occurred.emit(...)` → `handle_exception()` → `SpyderErrorDialog.show()`；而 `logging` 的 root / lastResort handler 正好写 stderr，所以插件里一句 `logger.error(...)` 就等价于向 IDE 报一个未处理异常。v0.8.13 只把 traceback 降到 debug，error 级别本身仍在弹；debug 模式下包里三十多处 `exc_info=True` 会输出 `  File "..."` 行，同样会把弹窗勾出来（Spyder 遇到 File 行会把 `is_warning` 重置成 False）。
+
+| 改动 | 说明 |
+|---|---|
+| 日志通道隔离 | 新增 `safe_logging.py`：给 `spyder_copilot_chat` 顶层 logger 挂专用 handler 并设 `propagate=False`，记录不再到达 root 的 stderr handler。只写 stdout 且 levelname 统一显示成 `WARNING`（双保险：即便宿主把 stdout 并进 error 流，Spyder 的 `'WARNING' in line` 判定也会跳过）；强制单行、剥离 traceback，traceback 存内存环形缓冲，用 `diagnostics_text()` 导出 |
+| 业务日志降级 | 包内所有 `logger.error` / `logger.exception`（auth / copilot_client / FIM / MCP / task_runtime / apply_patch / agentic_actions / chat_widget）改成 `warning`；新增 AST 静态守卫，以后谁再写 `logger.error` 直接被回归拦下 |
+| Worker 兜底 | `ChatWorker._emit_error()` 整段包 try/except：分类 / 卡片渲染 / 信号发送任一环节失败都退化为通用卡片，绝不把异常抛回 Qt 事件循环 |
+| Hy4 误诊修正 | TokenHub 用 402 表达「模型服务未开通」，错误体却常写成 `model hy4 does not exist`，被 MODEL markers 抢先判成「模型名写错」——用户照着改名字永远修不好。现在 hunyuan + 402 + MODEL 强制归 BALANCE，卡片给 TokenHub 控制台 / Key 页链接 |
+| MODEL 卡片 | 「模型不可用」不再只让人改模型名：先确认控制台已开通、确认 Key 与地址地域一致、用 `GET /v1/models` 看该地域真正上线的模型 |
+| 链接渲染 | `ApiErrorInfo.links` 从 v0.8.13 起就是死字段，现在补进卡片：充值页 / Key 页 / TokenHub 控制台都变成可点链接 |
+| 固定链接加固 | `release.yml` 同步 `latest/` wheel 时改用 tag 精确拼文件名并校验存在，不再依赖 `ls dist/*.whl \| head -1` 的文件名排序（混入历史 wheel 时会挑到最旧那个） |
+
+**验证**：新增 `tests/test_v095.py` **73 项**，其中逐行复刻 Spyder 内部控制台的 `is_warning` / `is_traceback` 判定，证明旧 `ERROR:` 行会弹窗、新 `WARNING` 行不会弹；覆盖隔离状态与幂等、`exc_info=True` 的 traceback 不进任何输出流、坏 record / 坏 stream 不抛、AST 静态守卫、`_emit_error` 面对怪异常对象不冒泡、本地 mock TokenHub 返回 402 时全程 stdout/stderr 干净。全库 **19 个**回归脚本（v077–v095）全部通过。实拍 `docs/images/hy4-model-error-dark.png`：真实面板里的「模型不可用」卡片，开通 / 地域 / `GET /v1/models` 三步与两个可点链接都完整显示；同一轮里走真实 `_emit_error` 路径实测 `stderr` 为 0 字节，stdout 只有一行 `WARNING ...`。
+
 ## v0.8.14：Hy4 Edition（腾讯混元 Hy4 成为一等 Provider）
 
 需求是「参考 [Hy AI Studio 文档中心](https://aistudio.tencent.com/hunyuan/doc-center)，新增支持腾讯的 Hy4 模型」。那个页面是 SPA，抓到的只有标题和目录，正文由 JS 动态加载；实际接口契约改从腾讯云 TokenHub 官方文档核对：API 用法 `/document/product/1300/78941`（地域域名、Bearer、`/v1/models`）、模型清单 `78934`（`hy4` / `hy4-preview`、1M 上下文、960k 输入 / 64k 输出、看图、Function Calling）、深度思考 `80637`（`thinking`、`reasoning_effort` 只接受 `high` / `no_think`）、思维保留 `81572`（带 `tools` 时默认开启 Preserved Thinking）。

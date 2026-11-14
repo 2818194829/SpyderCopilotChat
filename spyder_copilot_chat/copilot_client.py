@@ -199,7 +199,7 @@ def _request(method, path, headers, body=None, timeout=DEFAULT_TIMEOUT):
             raw = resp.read().decode("utf-8", "replace")
     except urllib.error.HTTPError as e:
         error_body = _http_error_body(e)
-        logger.error("Copilot API HTTP %d: %s", e.code, error_body[:500])
+        logger.warning("Copilot API HTTP %d: %s", e.code, error_body[:500])
         _raise_capi_error(e.code, error_body, e.headers)
     except (urllib.error.URLError, TimeoutError, OSError) as e:
         reason = getattr(e, "reason", e)
@@ -262,7 +262,7 @@ def _stream_request(path, headers, body, timeout=DEFAULT_TIMEOUT):
             resp = urllib.request.urlopen(req, timeout=timeout)
         except urllib.error.HTTPError as e:
             error_body = _http_error_body(e)
-            logger.error("Copilot API HTTP %d: %s", e.code, error_body[:500])
+            logger.warning("Copilot API HTTP %d: %s", e.code, error_body[:500])
             _raise_capi_error(e.code, error_body, e.headers)
         except (urllib.error.URLError, TimeoutError, OSError) as e:
             reason = getattr(e, "reason", e)

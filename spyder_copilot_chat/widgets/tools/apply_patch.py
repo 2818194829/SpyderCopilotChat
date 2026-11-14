@@ -269,7 +269,7 @@ def _apply_hunks(abs_path, rel_path, hunks, file_exists):
                 f"  当前文件共 {len(file_lines)} 行")
 
     except Exception as e:
-        logger.exception("应用补丁失败")
+        logger.warning("应用补丁失败: %s", e)
         return f"❌ 应用补丁失败 {rel_path}: {e}"
 
 

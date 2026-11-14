@@ -2,7 +2,7 @@
 
 把 **GitHub Copilot Chat** 搬进 Spyder 6：侧栏对话、Agent 自动改代码、改动直接标成红绿行等你逐处接受。
 
-![version](https://img.shields.io/badge/version-0.8.14-blue)
+![version](https://img.shields.io/badge/version-0.8.15-blue)
 ![python](https://img.shields.io/badge/python-3.9%2B-blue)
 ![spyder](https://img.shields.io/badge/Spyder-6.x-8A2BE2)
 ![license](https://img.shields.io/badge/license-MIT-green)
@@ -28,7 +28,7 @@ error: connection-timeout
 
 配了清华 PyPI 镜像也没用——镜像只代理 PyPI 上的包，GitHub Release 的文件是 pip 直接去 `github.com` 取的，不经过镜像。jsDelivr 在国内有节点，实测可达。
 
-> 文件名里的 `-0-` 是故意的：pip 要求 wheel 名字形如 `名称-版本-py3-none-any.whl`，版本段写死才能让 URL 固定。真实版本在 wheel 内部的 METADATA 里，装完 `pip show` 显示的是真实版本（当前 0.8.14）。`--force-reinstall` 不能省：版本没变时 pip 会说「already installed with the same version」，加它才保证每次都取 CDN 上当前那份。刚发版后 CDN 可能有最多约 12 小时缓存，急着要新包就用下面的方式二。
+> 文件名里的 `-0-` 是故意的：pip 要求 wheel 名字形如 `名称-版本-py3-none-any.whl`，版本段写死才能让 URL 固定。真实版本在 wheel 内部的 METADATA 里，装完 `pip show` 显示的是真实版本（当前 0.8.15）。`--force-reinstall` 不能省：版本没变时 pip 会说「already installed with the same version」，加它才保证每次都取 CDN 上当前那份。刚发版后 CDN 可能有最多约 12 小时缓存，急着要新包就用下面的方式二。
 
 四个参数各有原因，别省：
 
@@ -202,6 +202,8 @@ rm -rf ~/.spyder_copilot_chat                                         # macOS / 
 
 余额不足、Key 错、模型名错这类错误**不会自动重试**（重试一百次也还是不够钱），页脚会写明；限流、5xx、网络抖动才值得重试。已经吐出来的半截回答不会被错误文案覆盖，卡片接在后面。
 
+**API 出错不会弹 IDE 的崩溃窗口**（v0.8.15 起）。旧版本里服务端回一句「模型不可用」，Spyder 会弹出「Spyder遇到了内部错误！」的问题报告框——那不是进程崩溃：Spyder 6 把 `sys.stderr` 重定向到内部控制台，并把 error 流的每一行都当成未处理异常上报，而 `logging` 的 root handler 正好写 stderr，于是一句 `logger.error("Chat request failed: ...")` 就等价于向 IDE 报了崩溃。现在插件日志由 `safe_logging` 接管（不进 stderr，traceback 只留内存诊断缓冲），包内业务错误一律 `warning` 级别，错误仍然画成聊天面板里的卡片。想看诊断记录，在 Spyder 的内部控制台执行 `from spyder_copilot_chat import safe_logging; print(safe_logging.diagnostics_text())`；设环境变量 `SPYDER_COPILOT_CHAT_LOG=off` 可彻底静默控制台输出。
+
 ## 字号与字体
 
 顶栏的 **A** 按钮（或 `Ctrl+=` / `Ctrl+-` / `Ctrl+0`，也可以在对话流里 **Ctrl + 滚轮**）直接调正文字号，档位 12–36px；菜单里还能单独调界面字号、换字体族（系统 / 雅黑 / 思源黑体 / 等宽）。改完立即重排已有消息并写进 `config.json`，重启后保持。
@@ -239,7 +241,11 @@ rm -rf ~/.spyder_copilot_chat                                         # macOS / 
 
 **报错**：TokenHub 的 402 有两种含义——账户余额 / 额度不足，或这个模型服务还没开通；401 最常见的是 Key 与地域不匹配。错误卡片会按这两种情况分别给处置，不会再串成 DeepSeek 充值或 Copilot 订阅。流式响应里夹带的 `{"error": ...}` 帧（HTTP 200 里也可能出现）同样会被识别成错误，不会显示成「回答莫名中断」。
 
+看到「模型「hy4」在 TokenHub 上不可用」时**别急着改模型名**：最常见的原因是控制台还没开通 hy4 服务，或 Key 与 API 地址不属于同一地域（服务端有时会把「没权限」写成 `model does not exist`）。卡片直接给 TokenHub 控制台与 Key 页链接，按「确认已开通 → 核对地域 → `GET /v1/models` 看该地域真正上线的模型」三步走。v0.8.15 起这类错误只在聊天面板出卡片，不会再让 Spyder 弹内部错误窗口。
+
 ![Hy4 的 402 错误卡片](docs/images/hy4-error-402-dark.png)
+
+![Hy4 模型不可用的处置](docs/images/hy4-model-error-dark.png)
 
 > 这条链路按 TokenHub 公开的 OpenAI 兼容接口实现，端到端测试用本地 mock 服务覆盖请求体 / SSE / 错误帧 / 工具回填；没有真实 Key 时不发线上请求，实际可用模型以控制台开通情况为准。`hy4-preview` 官方另支持 `reasoning_effort: none`，设置页目前按正式版 `hy4` 统一给 `high / no_think`。
 

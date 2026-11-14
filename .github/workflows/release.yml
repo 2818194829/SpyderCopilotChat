@@ -41,7 +41,13 @@ jobs:
           git fetch origin main --depth=1
           git checkout -B main origin/main
           mkdir -p latest
-          cp "$(ls dist/*.whl | head -1)" latest/spydercopilotchat-0-py3-none-any.whl
+          # 精确定位本次 tag 构建出的 wheel，别用 ls | head -1：
+          # dist/ 里一旦混入历史版本，按文件名排序会挑到最旧的那个。
+          VERSION="${{ github.ref_name }}"
+          VERSION="${VERSION#v}"
+          WHEEL="dist/spydercopilotchat-${VERSION}-py3-none-any.whl"
+          test -f "$WHEEL" || { echo "wheel not found: $WHEEL"; ls -l dist; exit 1; }
+          cp "$WHEEL" latest/spydercopilotchat-0-py3-none-any.whl
           git add -f latest/spydercopilotchat-0-py3-none-any.whl
           if git diff --cached --quiet; then
             echo "wheel unchanged"

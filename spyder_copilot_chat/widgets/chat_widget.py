@@ -33,7 +33,7 @@ from . import theme
 from spyder.api.widgets.main_widget import PluginMainWidget
 
 from ..auth import get_valid_copilot_token, load_tokens
-from .. import api_errors
+from .. import api_errors, safe_logging
 from ..api_errors import ApiError
 from ..copilot_client import (
     AGENT_TOOLS,
@@ -1649,20 +1649,36 @@ class ChatWorker(QThread):
         这里只发**成品卡片**（Markdown）：GUI 线程拿到就能画，不再做任何
         判断——判断放在线程里，界面就不会因为文案问题抛异常。
 
-        日志刻意分成两级：``error`` 只写一行结论，traceback 降到 ``debug``。
-        旧实现用 ``logger.exception``，于是 Spyder 的内部控制台里是一整段
-        红色回溯，看起来跟 IDE 崩溃一模一样，实际只是账户没钱。
+        日志约定（v0.8.15）：Spyder 会把 stderr 的每一行当成未处理异常
+        弹「内部错误」窗口，所以包级日志已由 ``safe_logging`` 接管、不再
+        进 stderr。这里仍只用 ``warning``：即便有人改了包级日志配置，
+        warning 也不会被判成崩溃。traceback 走 ``note_exception`` 存进
+        内存诊断缓冲——``  File "..."`` 行一旦进输出流就会重新勾出弹窗。
         """
         if self._cancel:
             return
-        info = api_errors.classify(
-            exc, provider=self.cfg.get("provider", ""),
-            model=self.cfg.get("model", ""))
-        logger.error("Chat request failed: %s", api_errors.summary(info))
-        if not info.retryable:
-            logger.info("（%s 类错误不会自动重试，等用户处理）", info.kind)
-        logger.debug("failed request detail", exc_info=True)
-        self.error.emit(api_errors.card(info))
+        try:
+            provider = self.cfg.get("provider", "")
+            model = self.cfg.get("model", "")
+            info = api_errors.classify(exc, provider=provider, model=model)
+            logger.warning("Chat request failed: %s", api_errors.summary(info))
+            if not info.retryable:
+                logger.info("（%s 类错误不会自动重试，等用户处理）", info.kind)
+            safe_logging.note_exception(exc, "Chat request failed detail")
+            payload = api_errors.card(info)
+        except Exception:  # noqa: BLE001 - 错误处理不许成为新的崩溃点
+            try:
+                payload = api_errors.card_for(
+                    text=str(exc),
+                    provider=self.cfg.get("provider", ""),
+                    model=self.cfg.get("model", ""))
+            except Exception:
+                payload = api_errors.card_for(
+                    text="请求失败，错误卡片渲染也失败，请查看诊断日志。")
+        try:
+            self.error.emit(payload)
+        except Exception:
+            pass
 
     def _copilot(self):
         """Copilot 聊天：统一走 copilot_client.chat_completion()

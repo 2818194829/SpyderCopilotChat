@@ -416,7 +416,7 @@ def _post_json(url, data, headers=None):
             raw = resp.read().decode("utf-8", "replace")
     except urllib.error.HTTPError as e:
         error_body = e.read().decode("utf-8", errors="replace")
-        logger.error("HTTP %d: %s", e.code, error_body)
+        logger.warning("HTTP %d: %s", e.code, error_body)
         raise CopilotAuthError(
             f"GitHub OAuth HTTP {e.code}: {_short_body(error_body)}"
         ) from e

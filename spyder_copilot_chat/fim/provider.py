@@ -902,7 +902,7 @@ class CopilotFimProvider(SpyderCompletionProvider):
             logger.info("Copilot FIM: 限流，冷却 10 秒（429）")
         elif error == "client_rejected":
             self._client_rejected = True
-            logger.error("Copilot FIM: 客户端被拒绝（466），已熔断 FIM")
+            logger.warning("Copilot FIM: 客户端被拒绝（466），已熔断 FIM")
         elif error in ("cancelled",):
             return
         else:

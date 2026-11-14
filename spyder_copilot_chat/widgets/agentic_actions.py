@@ -128,7 +128,7 @@ def execute_tool(tool_call, base_dir=None):
 
         return tool_id, result, ""
     except Exception as e:
-        logger.exception("工具 %s 执行失败", func_name)
+        logger.warning("工具 %s 执行失败: %s", func_name, e)
         return tool_id, "", f"工具 {func_name} 执行失败: {e}"
 
 
@@ -622,7 +622,7 @@ def _handle_mcp_tool(tool_id, func_name, args, base_dir=None):
     except ImportError:
         return tool_id, "", "MCP 客户端模块不可用"
     except Exception as e:
-        logger.exception("MCP 工具 %s 执行失败", func_name)
+        logger.warning("MCP 工具 %s 执行失败: %s", func_name, e)
         return tool_id, "", f"MCP 工具 {func_name} 执行失败: {e}"
 
 

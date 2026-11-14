@@ -454,8 +454,35 @@ v0.8.14 (hy4)：腾讯混元 Hy4 / TokenHub 成为一等 Provider
   - 新增 test_v094.py 124 项（本地 mock TokenHub，覆盖注册表 / 设置页 /
     请求体 / SSE / 错误卡片 / FIM / 多模态 / 旧配置兼容）
 
+v0.8.15 (quiet)：API 出错不再让 Spyder 弹「内部错误」窗口 —— 那不是崩溃
+  - 现场：选 Hy4 后服务端回「模型不可用」，IDE 弹出「Spyder遇到了内部
+    错误！」问题报告框，正文是 `Chat request failed: 模型「hy4」...`
+  - 真因：Spyder 6 把 sys.stderr 重定向到内部控制台，对 error 流的每一行
+    都 emit sig_exception_occurred → SpyderErrorDialog；logging 的 root /
+    lastResort handler 正好写 stderr，于是一句 logger.error 等价于「向 IDE
+    报一个未处理异常」。v0.8.13 只降了 traceback，error 级别本身仍在弹
+  - 新增 safe_logging.py：包级 logger 挂专用 handler + propagate=False，
+    日志不再进 stderr；只写 stdout 且统一显示成 WARNING（双保险），
+    traceback 强制单行剥离、存进内存诊断缓冲供 diagnostics_text() 导出
+  - 包内所有业务 logger.error / logger.exception 降为 warning；AST 静态
+    守卫拦住以后新增的 error 级调用；debug 模式的 exc_info 也不再能弹窗
+  - ChatWorker._emit_error 整段兜底：分类 / 渲染 / emit 任一环失败都退化
+    成通用卡片，绝不把异常抛回 Qt 事件循环
+  - 顺手修 Hy4 误诊：TokenHub 402「模型服务未开通」的错误体常写成
+    "model does not exist"，被判成「模型名写错」；现在强制归 BALANCE，
+    MODEL 卡片也给开通 / 地域 / GET /v1/models 三步指引
+  - ApiErrorInfo.links 此前是死字段，现在渲染成卡片里可点的控制台链接
+
 """
 
-__version__ = "0.8.14"
-__edition__ = "hy4"
+__version__ = "0.8.15"
+__edition__ = "quiet"
+
+# Spyder 把 stderr 的每一行都当成未处理异常弹「内部错误」窗口。包一加载
+# 就接管自己的日志出口，保证任何子模块 import 之前这条隔离已经生效。
+try:
+    from .safe_logging import install as _install_safe_logging
+    _install_safe_logging()
+except Exception:  # pragma: no cover - 日志隔离失败不该拖垮插件加载
+    pass
 

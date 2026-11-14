@@ -2,7 +2,7 @@
 
 把 **GitHub Copilot Chat** 搬进 Spyder 6：侧栏对话、Agent 自动改代码、改动直接标成红绿行等你逐处接受。
 
-![version](https://img.shields.io/badge/version-0.8.19-blue)
+![version](https://img.shields.io/badge/version-0.8.20-blue)
 ![python](https://img.shields.io/badge/python-3.9%2B-blue)
 ![spyder](https://img.shields.io/badge/Spyder-6.x-8A2BE2)
 ![license](https://img.shields.io/badge/license-MIT-green)
@@ -28,7 +28,7 @@ error: connection-timeout
 
 配了清华 PyPI 镜像也没用——镜像只代理 PyPI 上的包，GitHub Release 的文件是 pip 直接去 `github.com` 取的，不经过镜像。jsDelivr 在国内有节点，实测可达。
 
-> 文件名里的 `-0-` 是故意的：pip 要求 wheel 名字形如 `名称-版本-py3-none-any.whl`，版本段写死才能让 URL 固定。真实版本在 wheel 内部的 METADATA 里，装完 `pip show` 显示的是真实版本（当前 0.8.19）。`--force-reinstall` 不能省：版本没变时 pip 会说「already installed with the same version」，加它才保证每次都取 CDN 上当前那份。刚发版后 CDN 可能有最多约 12 小时缓存，急着要新包就用下面的方式二。
+> 文件名里的 `-0-` 是故意的：pip 要求 wheel 名字形如 `名称-版本-py3-none-any.whl`，版本段写死才能让 URL 固定。真实版本在 wheel 内部的 METADATA 里，装完 `pip show` 显示的是真实版本（当前 0.8.20）。`--force-reinstall` 不能省：版本没变时 pip 会说「already installed with the same version」，加它才保证每次都取 CDN 上当前那份。刚发版后 CDN 可能有最多约 12 小时缓存，急着要新包就用下面的方式二。
 
 四个参数各有原因，别省：
 
@@ -230,6 +230,14 @@ rm -rf ~/.spyder_copilot_chat                                         # macOS / 
 ![修复后：两者垂直居中对齐](docs/images/flyout-align-after-dark.png)
 ![修复后（浅色主题）](docs/images/flyout-align-after-light.png)
 
+鼠标靠近刻度会**梯度放大**（v0.8.20）：指针所在那根最大（14×12），左右相邻各降一档（11×7 / 9×5），其余保持默认；离开后 120ms 缓出缩回。清单里**掠过某一行就选中**，不用先点——右侧对应刻度会一起放大，指哪儿看哪儿；离开清单后高亮回到当前视口那条。
+
+刻度与清单之间只留 2px，移出去后延迟 220ms 才判断收不收：指针还在刻度或清单上都不收，所以从刻度横移进清单不会闪。点行或点刻度才真正跳转。
+
+![悬停刻度 + 清单掠过选中（深色）](docs/images/hover-rail-dark.png)
+![刻度梯度放大特写](docs/images/rail-zoom-dark.png)
+![悬停刻度 + 清单掠过选中（浅色）](docs/images/hover-rail-light.png)
+
 ## 过程面板的 Markdown 渲染（v0.8.18）
 
 工具结果里带**半截代码围栏**时，后面追加的标题、列表、检查点会被整段吞进一张 `Code · N 行` 卡片，看起来像「Markdown 没渲染」。典型现场：`read_file` 返回的是「文件头 + 围栏 + 文件内容 + 围栏」，过程卡片只取前 3 个非空行做预览，开启围栏留下了、闭合围栏还在文件末尾被截掉；过程面板把多条内容拼成一份 markdown，这个没闭合的围栏就一路吞到消息末尾。
@@ -326,6 +334,7 @@ rm -rf ~/.spyder_copilot_chat                                         # macOS / 
 - **历史消息导航条** — 右侧刻度索引你发过的每条消息，悬停展开清单、点击跳回（v0.8.17）
 - **过程面板的 Markdown 渲染** — 半截代码围栏不再把后续标题 / 列表 / 检查点吞成一张代码块卡片（v0.8.18）
 - **清单与刻度垂直居中** — 展开的消息清单对齐右侧刻度条中心，不再飘在面板顶部（v0.8.19）
+- **刻度悬停放大 / 掠过即选** — 靠近刻度梯度放大，清单里掠过某行直接选中并联动刻度（v0.8.20）
 - **Plan 规划模式** — AI 先制定计划再逐步执行
 
 ## 自定义配置
@@ -388,7 +397,7 @@ python -m build --wheel
 
 产物在 `dist/`，`pip install dist/*.whl` 即可安装。
 
-回归脚本按版本号命名：早期版本在 `dist/preview/`（`test_v077.py` … `test_v092.py`），近版本在 `tests/`（`test_v093.py` … `test_v099.py`），共 23 个。这些脚本会真的建 `QTextDocument` / Qt 控件并模拟 Spyder 的可见范围过滤，需要在装好 Qt 与 Spyder 的解释器里跑，多数用 `QT_QPA_PLATFORM=offscreen` 离屏执行。
+回归脚本按版本号命名：早期版本在 `dist/preview/`（`test_v077.py` … `test_v092.py`），近版本在 `tests/`（`test_v093.py` … `test_v100.py`），共 24 个。这些脚本会真的建 `QTextDocument` / Qt 控件并模拟 Spyder 的可见范围过滤，需要在装好 Qt 与 Spyder 的解释器里跑，多数用 `QT_QPA_PLATFORM=offscreen` 离屏执行。
 
 ## 致谢
 

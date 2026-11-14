@@ -213,8 +213,14 @@ def test_rail_hit_and_signals():
     _move(r, 7, rects[1].center().y())
     check("悬停发出 hovered 信号", 1 in hovered)
     eq("悬停后 tooltip 指向该条", r.toolTip(), "2. msg")
-    eq("悬停项被放大", r._tick_rects()[1].height(),
-       CW.MessageRail.TICK_H + 2)
+    # v0.8.20 把「+2px 瞬时放大」换成了 120ms 动画 + 梯度放大：
+    # 这里直接把过渡进度推到终态，断言放大后的目标尺寸。
+    r._hover_scale = 1.0
+    moved = r._tick_rects()[1]
+    eq("悬停项被放大", moved.height(), CW.MessageRail.HOVER_H)
+    eq("悬停项变长", moved.width(), CW.MessageRail.HOVER_W)
+    check("悬停放大后仍在条内",
+          moved.x() >= 0 and moved.right() < CW.MessageRail.WIDTH)
 
 
 def test_rail_many_ticks_no_overlap():

@@ -20,7 +20,8 @@ import time
 import weakref
 
 from qtpy.QtCore import (
-    QEvent, QPoint, QRect, QRectF, Qt, Signal, QThread, QTimer, QSize,
+    QEvent, QEasingCurve, QPoint, QRect, QRectF, Qt, Signal, QThread,
+    QTimer, QSize, QVariantAnimation,
 )
 from qtpy.QtGui import (
     QColor, QCursor, QFont, QKeySequence, QPainter, QPixmap, QTextCursor,
@@ -2210,6 +2211,19 @@ class MessageRail(QFrame):
     TICK_W = 8
     CUR_H = 14
     CUR_W = 12
+    #: 悬停放大档位（v0.8.20）：自身一档、左右邻居各一档。
+    #: 原来只 +2px，14px 宽的条上几乎看不出来——用户截图里「靠近 1
+    #: 应该放大」说的就是它。Codex 那类消息轨道也是这个思路：以指针
+    #: 为中心做梯度，邻近刻度一起被"带起来"，视线才跟得住。
+    # 最大宽必须 ≤ WIDTH：刻度画在控件内，超出去会被 Qt 裁掉。
+    # 宽度受 14px 条宽限制，靠高度拉开差距：8x4 → 14x12（面积 5.25x），
+    # 悬停项是整条里最"胖"的一颗，比当前项的竖条还显眼。
+    HOVER_W = 14
+    HOVER_H = 12
+    NEAR_W = 11
+    NEAR_H = 7
+    FAR_W = 9
+    FAR_H = 5
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -2223,14 +2237,53 @@ class MessageRail(QFrame):
         self._index = -1        # 当前视口最靠上的一条用户消息
         self._hover = -1
         self._hover_bg = False
+        #: 悬停放大的过渡进度（0=静止，1=完全展开）。8x4 的刻度直接跳成
+        #: 18x9 像"闪一下"，120ms 的缓出才像被指针带出来的。
+        self._hover_scale = 0.0
+        self._hover_anim = QVariantAnimation(self)
+        self._hover_anim.setDuration(120)
+        self._hover_anim.setEasingCurve(QEasingCurve.OutCubic)
+        self._hover_anim.valueChanged.connect(self._on_hover_tick)
         self.setVisible(False)
+
+    def set_hover(self, index):
+        """设置悬停项（-1 = 没有）；清单里掠过某行时也走这里。
+
+        与 ``_hover`` 直接赋值不同：这里顺带驱动放大/回缩动画，鼠标离开
+        或清单收起后刻度会自己缩回去。
+        """
+        index = int(index)
+        if index == self._hover:
+            return
+        self._hover = index
+        target = 1.0 if index >= 0 else 0.0
+        try:
+            self._hover_anim.stop()
+            self._hover_anim.setStartValue(float(self._hover_scale))
+            self._hover_anim.setEndValue(target)
+            self._hover_anim.start()
+        except RuntimeError:
+            self._hover_scale = target
+        self.update()
+
+    def _on_hover_tick(self, value):
+        """动画每帧只改一个浮点数再重绘。
+
+        这个槽跑在动画定时器里，未捕获异常会让 Qt 直接 abort（项目里
+        已经吃过 exit 127 的亏），所以整段兜底。
+        """
+        try:
+            self._hover_scale = float(value)
+            self.update()
+        except Exception:  # noqa: BLE001
+            self._hover_scale = 0.0
 
     def set_ticks(self, ticks, current=-1):
         """ticks: ``[(ratio, tooltip), ...]``；current 为高亮项下标。"""
         self._ticks = list(ticks or [])
         self._index = int(current)
         if self._hover >= len(self._ticks):
-            self._hover = -1
+            self.set_hover(-1)
         self.setVisible(bool(self._ticks))
         self.update()
 
@@ -2256,10 +2309,23 @@ class MessageRail(QFrame):
             y = start + step * i
             if i == self._index:
                 w, hh = self.CUR_W, self.CUR_H
-            elif i == self._hover:
-                w, hh = self.TICK_W + 2, self.TICK_H + 2
             else:
                 w, hh = self.TICK_W, self.TICK_H
+            # 悬停梯度：指针所在刻度最大，左右各降一档；进度由动画控制，
+            # 所以「靠近变大、离开变小」是连续的，不是两帧跳变。
+            if self._hover >= 0 and self._hover_scale > 0.01:
+                d = abs(i - self._hover)
+                if d == 0:
+                    tw, th = max(w, self.HOVER_W), max(hh, self.HOVER_H)
+                elif d == 1:
+                    tw, th = max(w, self.NEAR_W), max(hh, self.NEAR_H)
+                elif d == 2:
+                    tw, th = max(w, self.FAR_W), max(hh, self.FAR_H)
+                else:
+                    tw, th = w, hh
+                s = self._hover_scale
+                w = int(round(w + (tw - w) * s))
+                hh = int(round(hh + (th - hh) * s))
             rects.append(QRect((self.WIDTH - w) // 2, int(y), w, hh))
         return rects
 
@@ -2305,18 +2371,17 @@ class MessageRail(QFrame):
 
     def leaveEvent(self, event):  # noqa: N802 - Qt 接口
         self._hover_bg = False
-        self._hover = -1
+        # 走 set_hover：清掉悬停的同时把放大动画收回默认尺寸
+        self.set_hover(-1)
         self.setToolTip("")
         self.hovered.emit(-1)
-        self.update()
         super().leaveEvent(event)
 
     def mouseMoveEvent(self, event):  # noqa: N802 - Qt 接口
         i = self._index_at(event.pos())
         if i != self._hover:
-            self._hover = i
+            self.set_hover(i)
             self.hovered.emit(i)
-            self.update()
         if 0 <= i < len(self._ticks):
             self.setToolTip(self._ticks[i][1])
         else:
@@ -2345,6 +2410,10 @@ class MessageFlyout(QFrame):
     """
 
     locate = Signal(int)
+    #: 鼠标掠过某一行时发消息序号（-1 = 已离开清单），供右侧刻度联动
+    hovered = Signal(int)
+    #: 指针进入清单——面板据此取消"即将收起"的定时器
+    entered = Signal()
 
     MAX_ROWS = 24
     ROW_PAD = 7
@@ -2359,11 +2428,43 @@ class MessageFlyout(QFrame):
         theme.named(self._list, "popupList")
         self._list.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
         self._list.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        # v0.8.20：鼠标掠过即选中（WorkBuddy 的提问列表就是这个手感），
+        # 不用点。itemEntered 依赖 mouse tracking，view 和 viewport 都要开。
+        self._list.setMouseTracking(True)
+        self._list.viewport().setMouseTracking(True)
+        self._list.itemEntered.connect(self._on_item_entered)
         self._list.itemClicked.connect(
             lambda it: self._pick(it.data(Qt.UserRole)))
         self._list.itemActivated.connect(
             lambda it: self._pick(it.data(Qt.UserRole)))
         lay.addWidget(self._list)
+        #: 当前视口对应的行，鼠标离开清单后高亮要回到它
+        self._current_row = -1
+
+    def _on_item_entered(self, item):
+        """鼠标掠过某一行：选中它，并把序号回传给面板。"""
+        try:
+            row = self._list.row(item)
+            index = item.data(Qt.UserRole)
+        except RuntimeError:
+            return
+        self.set_current(row)
+        if isinstance(index, int):
+            self.hovered.emit(index)
+
+    def enterEvent(self, event):  # noqa: N802 - Qt 接口
+        self.entered.emit()
+        super().enterEvent(event)
+
+    def leaveEvent(self, event):  # noqa: N802 - Qt 接口
+        """离开清单：清掉刻度联动，高亮回到"当前视口那条"。"""
+        try:
+            self.hovered.emit(-1)
+            if self._current_row >= 0:
+                self.set_current(self._current_row)
+        except RuntimeError:
+            pass
+        super().leaveEvent(event)
 
     def _pick(self, index):
         if not isinstance(index, int):
@@ -2389,6 +2490,9 @@ class MessageFlyout(QFrame):
                                    % (len(items) - self.MAX_ROWS))
             more.setFlags(Qt.NoItemFlags)
             self._list.addItem(more)
+        # 记住"视口那条"是哪一行：鼠标掠过别的行、离开清单后要亮回它
+        self._current_row = (min(current, self._list.count() - 1)
+                             if current >= 0 else -1)
         self.set_current(current)
         width = max(240, min(460, widest + 64))
         rows = min(len(items), self.MAX_ROWS) + (
@@ -3025,9 +3129,18 @@ class CopilotChatPanel(QWidget):
         self._rail.raise_()
         self._flyout = MessageFlyout(self)
         self._flyout.locate.connect(self._locate_user_message)
+        # 掠过清单某行 → 右侧对应刻度也放大；指针进清单 → 取消收起
+        self._flyout.hovered.connect(self._on_flyout_hovered)
+        self._flyout.entered.connect(self._cancel_flyout_hide)
         #: 浮层当前装的是第几条 / 一共几条——用来判断"要不要重建列表"
         self._flyout_count = -1
         self._flyout_highlight = -2
+        #: 延迟收起：鼠标从刻度条移到清单要穿过 2px 缝，立即收会闪掉。
+        #: 220ms 给指针留出跨界时间；进入任一块都会取消这次收起。
+        self._flyout_hide_timer = QTimer(self)
+        self._flyout_hide_timer.setSingleShot(True)
+        self._flyout_hide_timer.setInterval(220)
+        self._flyout_hide_timer.timeout.connect(self._on_flyout_hide_timeout)
         #: [{"bubble": ..., "text": ...}] —— 只装用户消息，供导航条与清单用
         self._user_marks = []
         self._rail_timer = QTimer(self)
@@ -3670,6 +3783,7 @@ class CopilotChatPanel(QWidget):
         # 鼠标掠过刻度时这个函数会被高频调用：条数没变就只挪高亮，
         # 不重建列表（重建会把列表的滚动位置重置回顶部）。
         if self._flyout.isVisible() and self._flyout_count == len(marks):
+            self._cancel_flyout_hide()
             self._flyout.set_current(target)
             self._flyout_highlight = target
             return
@@ -3701,11 +3815,14 @@ class CopilotChatPanel(QWidget):
             vg = self._scroll.geometry()
         except RuntimeError:
             return
-        x = rg.left() - size.width() - 6
+        # 间隙只留 2px：6px 时指针从刻度横移进清单要"跨过一条沟"，
+        # 期间既不在 rail 也不在清单里，配合延迟收起才不会闪（v0.8.20）。
+        x = rg.left() - size.width() - 2
         h = min(size.height(), max(120, vg.height() - 10))
         y = self._flyout_y(rg.top(), rg.height(),
                            vg.top(), vg.height(), h)
         self._flyout.setGeometry(max(4, x), y, size.width(), h)
+        self._cancel_flyout_hide()
         self._flyout.setVisible(True)
         self._flyout.raise_()
 
@@ -3725,18 +3842,74 @@ class CopilotChatPanel(QWidget):
         return max(lo, min(hi, y))
 
     def _on_rail_hovered(self, index):
-        """鼠标掠过刻度时就展开清单，并把对应行选中。
+        """鼠标掠过刻度：放大该刻度，并展开清单、选中对应行。
 
-        比"必须精准悬停 10px 竖条才弹"好得多：刻度本身就是导航条主体的
-        视觉锚点，用户往那儿一动鼠标，意图已经很明确了。移出则收起。
+        移出刻度**不立刻收起**——指针多半正往清单上走。v0.8.19 之前这里
+        立即判断「不在清单上就收」，指针穿过 6px 缝隙的那一瞬清单就闪掉
+        了，用户根本到不了第 2 行（截图里标注 2 的诉求）。
         """
+        self._cancel_flyout_hide()
         if index < 0:
-            if not self._over_flyout(QCursor.pos()):
-                self._hide_message_flyout()
+            self._schedule_flyout_hide()
             return
         self._show_message_flyout(highlight=index)
 
+    def _on_flyout_hovered(self, index):
+        """清单里掠过某行 → 右侧对应刻度也放大；离开则清掉。"""
+        rail = getattr(self, "_rail", None)
+        if rail is None:
+            return
+        try:
+            rail.set_hover(index)
+        except RuntimeError:
+            pass
+
+    def _schedule_flyout_hide(self):
+        """220ms 后再决定收不收，给指针留出「刻度 → 清单」的跨界时间。"""
+        timer = getattr(self, "_flyout_hide_timer", None)
+        if timer is None:
+            return
+        try:
+            timer.start()
+        except RuntimeError:
+            pass
+
+    def _cancel_flyout_hide(self):
+        timer = getattr(self, "_flyout_hide_timer", None)
+        if timer is None:
+            return
+        try:
+            timer.stop()
+        except RuntimeError:
+            pass
+
+    def _on_flyout_hide_timeout(self):
+        """延迟到点：指针仍在刻度条或清单上就不收。
+
+        这个槽跑在 QTimer 里，未捕获异常会让 Qt 直接 abort（项目里吃过
+        exit 127 的亏），整段兜底。
+        """
+        try:
+            pos = QCursor.pos()
+            if self._over_flyout(pos) or self._over_rail(pos):
+                return
+            self._hide_message_flyout()
+        except Exception:  # noqa: BLE001
+            logger.debug("消息清单延迟收起失败", exc_info=True)
+
+    def _over_rail(self, global_pos):
+        rail = getattr(self, "_rail", None)
+        if rail is None:
+            return False
+        try:
+            if not rail.isVisible():
+                return False
+            return rail.rect().contains(rail.mapFromGlobal(global_pos))
+        except RuntimeError:
+            return False
+
     def _hide_message_flyout(self):
+        self._cancel_flyout_hide()
         flyout = getattr(self, "_flyout", None)
         if flyout is not None and flyout.isVisible():
             flyout.setVisible(False)
@@ -3777,11 +3950,12 @@ class CopilotChatPanel(QWidget):
         """
         if not self._flyout.isVisible():
             return
-        if self._over_flyout(global_pos):
+        if self._over_flyout(global_pos) or self._over_rail(global_pos):
+            self._cancel_flyout_hide()
             return
         x = self._scroll.viewport().mapFromGlobal(global_pos).x()
         if x < self._scroll.viewport().width() - 70:
-            self._hide_message_flyout()
+            self._schedule_flyout_hide()
 
     def eventFilter(self, obj, event):  # noqa: N802 - Qt 接口
         """对话流右缘也能唤出清单，但主要入口是导航条本身。
@@ -3816,7 +3990,8 @@ class CopilotChatPanel(QWidget):
                 elif etype in (QEvent.Leave, QEvent.Wheel):
                     self._rail_timer.start()
                     if etype == QEvent.Leave:
-                        self._hide_message_flyout()
+                        # 同样走延迟：离开视口可能是往右缘刻度或清单上走
+                        self._schedule_flyout_hide()
         except (RuntimeError, AttributeError):
             pass
         return super().eventFilter(obj, event)

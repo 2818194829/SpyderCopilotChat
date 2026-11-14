@@ -84,7 +84,8 @@ def test_static_guards():
     check("定位改走 _flyout_y", "self._flyout_y(" in seg)
     check("旧的贴顶写法已移除",
           "max(vg.top() + 4, rg.top() - 4)" not in seg)
-    check("仍贴导航条左缘", "rg.left() - size.width() - 6" in seg)
+    # v0.8.20 把间隙从 6px 收到 2px，指针横移进清单时不再"跨空"
+    check("仍贴导航条左缘", "rg.left() - size.width() - 2" in seg)
     check("仍限制高度不超滚动区",
           "min(size.height(), max(120, vg.height() - 10))" in seg)
     check("_flyout_y 是静态方法", "@staticmethod" in seg

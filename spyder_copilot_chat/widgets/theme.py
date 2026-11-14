@@ -1440,6 +1440,11 @@ QListWidget#popupList {{
     outline: none;
 }}
 QListWidget#popupList::item {{ padding: 6px 12px; border-radius: 5px; }}
+/* v0.8.20：鼠标掠过即高亮（不用点）。写在 :selected 之前，
+   让"掠过"和"选中"同时命中时以 accent_soft 为准。 */
+QListWidget#popupList::item:hover {{
+    background: {t['surface_alt']}; color: {t['text']};
+}}
 QListWidget#popupList::item:selected {{
     background: {t['accent_soft']}; color: {t['text']};
 }}

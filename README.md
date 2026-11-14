@@ -61,25 +61,25 @@ Spyder 独立安装包把自带环境目录设成只读 ACL，`pip` 默认会落
 - **多 Provider 支持** — GitHub Copilot / DeepSeek / OpenAI / Anthropic / Ollama 等 10 个服务商
 - **内联聊天** — 在编辑器中快速对话，直接针对选中代码提问
 
-### 🔍 子 Agent 系统（新增）
+### 🔍 子 Agent 系统
 - **搜索子 Agent (searchSubagent)** — 专门用于在工作区中智能搜索代码
 - **执行子 Agent (executionSubagent)** — 专门用于运行命令并返回结果
 - **Fleet 模式** — 并行执行多个子 Agent 任务，提高效率
 
-### 📂 Git & 代码审查（新增）
+### 📂 Git & 代码审查
 - **Git 更改查看 (getChangedFiles)** — 获取工作区更改文件和 diff
 - **Git 操作** — git_add / git_commit / git_create_branch / git_log
 - **代码审查 (review_changes)** — AI 审查未提交的代码更改
 - **代码审查面板** — 可视化 Git diff 浏览
 
-### 🩹 编辑工具（新增）
+### 🩹 编辑工具
 - **补丁应用 (applyPatch)** — 统一 diff 格式精确编辑文件
 - **精确替换 (insertEdit)** — 精确字符串替换编辑
 
-### 📓 Notebook 操作（新增）
+### 📓 Notebook 操作
 - 创建 / 获取信息 / 添加编辑删除单元格
 
-### ⚡ 原有功能
+### ⚡ IDE 集成
 - **FIM 代码补全** — 内联代码补全（需额外配置）
 - **项目上下文** — 自动收集项目文件提供上下文
 - **斜杠命令** — `/fix`, `/explain`, `/tests`, `/plan`, `/optimize`, `/doc`, `/review` 等
@@ -151,7 +151,7 @@ python -m build --wheel
 
 产物在 `dist/`，`pip install dist/*.whl` 即可安装。
 
-回归脚本在 `dist/preview/`，按版本号命名（`test_v077.py` … `test_v083.py`），需要在带 Qt 与 Spyder 的解释器里跑，多数用 `QT_QPA_PLATFORM=offscreen` 离屏执行。
+回归脚本在 `dist/preview/`，按版本号命名（`test_v077.py` … `test_v083.py`）。这些脚本会真的建 `QTextDocument` 并模拟 Spyder 的可见范围过滤，需要在装好 Qt 与 Spyder 的解释器里跑，多数用 `QT_QPA_PLATFORM=offscreen` 离屏执行。
 
 ## 致谢
 

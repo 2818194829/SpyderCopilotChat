@@ -442,7 +442,9 @@ def parse_blocks(text):
                     break
                 body.append(lines[j])
                 j += 1
-            blocks.append({"kind": "code", "lang": lang,
+            # marker 随块带出：整段插入前的围栏自平衡要按同样的长度补闭合，
+            # 不能凭空猜 ``` ——四反引号围住三反引号时长度不对就合不上。
+            blocks.append({"kind": "code", "lang": lang, "marker": marker,
                            "code": "\n".join(body), "closed": closed})
             i = j
             continue

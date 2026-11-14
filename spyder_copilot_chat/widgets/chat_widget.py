@@ -92,7 +92,7 @@ from .task_runtime import (
 from .todo_panel import TodoPanel
 from .todo_manager import TodoManager
 # Markdown 渲染器（Pygments 语法高亮 + 块级缓存）
-from .markdown_renderer import extract_code_blocks, render_markdown
+from .markdown_renderer import extract_code_blocks, parse_blocks, render_markdown
 # 补丁 → 行模型（对话内红绿卡片与审批卡共用同一套解析）
 from . import diff_view as _diff
 from .stream_renderer import StreamRenderer
@@ -256,6 +256,41 @@ def _polish_tool_text(text, keep_mark=True):
         out.append(line)
     return "\n".join(out)
 
+
+# 摘要里出现围栏行，一定是截断留下的残片：完整代码块不会只剩三反引号。
+_FENCE_LINE_RE = re.compile(r"^\s*(`{3,}|~{3,})")
+
+
+def _strip_fence_lines(text):
+    """删掉摘要里的围栏行（保留正文），避免留下孤立的开启围栏。
+
+    ``read_file`` 的结果是 ``[文件名 — N 行]\\n```\\n内容…\\n``` ``，
+    而过程卡片只取前 3 个非空行做预览：开启围栏被带上了，闭合围栏还在
+    文件末尾、早被截掉。这半截围栏会把后面追加的所有内容吞进代码块。
+    """
+    return "\n".join(line for line in str(text or "").split("\n")
+                     if not _FENCE_LINE_RE.match(line))
+
+
+def _balance_fences(text):
+    """整段插入前补齐未闭合的围栏。
+
+    过程面板 / ``append_block`` 把多条内容用空行拼成**一份** markdown
+    文档。只要其中一条带着没闭合的围栏，后面追加的标题、列表、粗体、
+    检查点就全成了代码块正文——用户看到的是「Markdown 完全不渲染」，
+    而且只剩一张 ``Code · N 行`` 卡片。
+
+    判定直接复用渲染器的 ``parse_blocks``，和实际渲染同一套口径（含
+    ```` ```合适。 ```` 这类宽松闭合），不会补出多余的第二个围栏。
+    """
+    try:
+        blocks = parse_blocks(text)
+    except Exception:                   # noqa: BLE001 - 兜底不许影响界面
+        return text
+    if blocks and blocks[-1]["kind"] == "code" and not blocks[-1]["closed"]:
+        marker = blocks[-1].get("marker") or "```"
+        return text.rstrip("\n") + "\n" + marker
+    return text
 
 
 # ===================================================================
@@ -729,7 +764,9 @@ class ProcessPane(QFrame):
                 cls._live.discard(pane)
 
     def append(self, md):
-        body = (md or "").strip("\n")
+        # 每条过程内容都必须是自洽的 markdown：一条带半截围栏，后面
+        # 所有步骤都会被吞进同一个代码块（v0.8.18 实拍）。
+        body = _balance_fences((md or "").strip("\n"))
         if not body:
             return
         # 过程里出现过失败就不自动收起：错误被折进"已完成"里，
@@ -1106,8 +1143,9 @@ class MessageBubble(QFrame):
         if not body:
             return
         if kind == "process":
-            self.add_process(body)
+            self.add_process(body)   # ProcessPane.append 里会做围栏自平衡
             return
+        body = _balance_fences(body)
         # 卡片（diff / 检查点 / 警告）是"结果"，先给待定叙述定性，
         # 再把它续在正文末尾，保证顺序和折叠面板的边界一致。
         self.commit_say()
@@ -5411,7 +5449,10 @@ class CopilotChatPanel(QWidget):
                 result_preview = "(返回结构化数据)"
             else:
                 preview_lines = [l for l in rlines if l.strip()][:3]
-                result_preview = "\n".join(preview_lines)[:300]
+                # read_file 结果自带 ``` 围栏；只取 3 行会把开启围栏单独
+                # 留下，后面整个折叠面板都会变成代码块（v0.8.18）。
+                result_preview = _strip_fence_lines(
+                    "\n".join(preview_lines))[:300]
 
             if self._current_bubble:
                 icon = "✓" if "错误" not in result[:20] else "!"

@@ -2,7 +2,7 @@
 
 把 **GitHub Copilot Chat** 搬进 Spyder 6：侧栏对话、Agent 自动改代码、改动直接标成红绿行等你逐处接受。
 
-![version](https://img.shields.io/badge/version-0.8.3-blue)
+![version](https://img.shields.io/badge/version-0.8.4-blue)
 ![python](https://img.shields.io/badge/python-3.9%2B-blue)
 ![spyder](https://img.shields.io/badge/Spyder-6.x-8A2BE2)
 ![license](https://img.shields.io/badge/license-MIT-green)
@@ -15,7 +15,7 @@
 pip install --upgrade "git+https://github.com/2818194829/SpyderCopilotChat.git"
 ```
 
-不想让 pip 现场构建的话，也可以从 [Releases](https://github.com/2818194829/SpyderCopilotChat/releases) 直接下 `.whl` 再 `pip install spydercopilotchat-0.8.3-py3-none-any.whl`，内容一模一样。
+不想让 pip 现场构建的话，也可以从 [Releases](https://github.com/2818194829/SpyderCopilotChat/releases) 直接下 `.whl` 再 `pip install spydercopilotchat-0.8.4-py3-none-any.whl`，内容一模一样。
 
 Spyder 独立安装包把自带环境目录设成只读 ACL，`pip` 默认会落到 user site，**不需要管理员权限**，插件入口点也正是从那里被发现。
 
@@ -47,6 +47,14 @@ Spyder 独立安装包把自带环境目录设成只读 ACL，`pip` 默认会落
 | 新增行 | `#dff3e5` | `#1d3428` |
 
 ![深色主题](docs/images/inline-diff-dark.png)
+
+## 过程折叠
+
+一轮里读了哪些文件、跑了什么命令，收在回复顶部的一行摘要里。运行中它展开成 `▾ 正在处理 0m41s`，结束后自动收成 `▸ 已完成 5m1s · 6 步`，点一下再看细节。
+
+折叠的前提不是 CSS，而是**归属**：一段叙述后面若还跟着工具调用，它属于过程；这一轮到此为止，它才是结论。所以折起来的是过程，答案始终留在外面。失败例外——过程里出现报错时保持展开，不让错误被折进「已完成」。
+
+![过程折叠](docs/images/process-expanded-light.png)
 
 ## 安装位置
 

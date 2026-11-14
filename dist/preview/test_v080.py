@@ -42,8 +42,12 @@ class Bubble(object):
     def __init__(self):
         self.blocks = []
 
-    def append_block(self, text):
+    def append_block(self, text, kind="result"):
+        # v0.8.4 起 append_block 多了 kind（process/result），替身跟着放宽
         self.blocks.append(text)
+
+    def begin_process(self):
+        pass
 
 
 class Audit(object):

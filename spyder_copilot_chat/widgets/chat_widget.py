@@ -130,6 +130,30 @@ def _format_api_error(exc):
     return text[:500]
 
 
+def _brief_tool_args(raw, width=56):
+    """从工具参数里挑一个"最像对象"的值，压成一行摘要。
+
+    过程面板要的是「一行一步」（``运行校验、查看文件: editor_diff.py``），
+    不是把 700 字符的 JSON 摆进去——那等于把日志搬进折叠区，展开后
+    照样一屏看不懂。
+    """
+    try:
+        data = json.loads(raw or "{}")
+    except Exception:
+        return (raw or "").strip().replace("\n", " ")[:width]
+    if not isinstance(data, dict):
+        return str(data)[:width]
+    for key in ("path", "file", "files", "command", "cmd", "pattern",
+                "query", "url", "name", "title"):
+        value = data.get(key)
+        if isinstance(value, (list, tuple)) and value:
+            value = value[0]
+        if isinstance(value, str) and value.strip():
+            return value.strip().replace("\n", " ")[:width]
+    keys = [k for k in data if not k.startswith("_")][:3]
+    return ", ".join(keys)[:width]
+
+
 def _format_tool_args(raw, limit=700):
     """工具参数展示：能解析就缩进成多行 JSON，过长按字符截断。
 
@@ -316,6 +340,179 @@ class ClickChip(QLabel):
         super().mouseReleaseEvent(event)
 
 
+def _fmt_dur(seconds):
+    """把秒数写成 ``5m1s`` / ``42s``，越界一律当 0。"""
+    sec = int(max(0.0, seconds))
+    mins, rest = divmod(sec, 60)
+    return f"{mins}m{rest}s" if mins else f"{rest}s"
+
+
+class ProcessPane(QFrame):
+    """一轮对话的「过程」折叠面板（v0.8.4）。
+
+    对标 Cursor / Claude Code 的 transcript 折叠：运行中展开，让用户
+    看得见它在干活；这一轮结束后自动收成一行 ``已完成 5m1s · 6 步``，
+    点一下再展开。失败时不收（在 ``MessageBubble.finish_process`` 里
+    判），因为把报错折进"已完成"里等于告诉用户它成功了。
+
+    ``_user_toggled`` 是必须的：没有它，用户刚点开看细节，下一帧到达
+    又会把面板收回去，交互会变得没法用。
+    """
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._md = ""
+        self._steps = 0
+        self._running = False
+        self._started = None
+        self._elapsed = 0.0
+        self._user_toggled = False
+        self._rendered = False
+        self._silent = False
+        self._failed = False
+
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(8, 4, 8, 6)
+        lay.setSpacing(2)
+        self.setObjectName("processPane")
+        self.setFrameShape(QFrame.NoFrame)
+
+        self._btn = QToolButton(self)
+        self._btn.setCheckable(True)
+        self._btn.setChecked(True)
+        self._btn.setAutoRaise(True)
+        self._btn.setCursor(Qt.PointingHandCursor)
+        self._btn.setToolButtonStyle(Qt.ToolButtonTextOnly)
+        self._btn.toggled.connect(self._on_toggled)
+        lay.addWidget(self._btn, 0, Qt.AlignLeft)
+
+        self._view = MessageView(self)
+        theme.named(self._view, "messageBody")
+        self._view.document().setDocumentMargin(0)
+        lay.addWidget(self._view)
+
+        self._timer = QTimer(self)
+        self._timer.setInterval(1000)
+        self._timer.timeout.connect(self._tick)
+
+        self.setVisible(False)
+        # 和气泡一样只能收到 sizeHint 高度，否则外层布局会把剩余空间
+        # 全分给它——灰块被拉高一截，正文挤在顶部，看着像渲染错位。
+        self.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Maximum)
+        self._style_header()
+        self._refresh_label()
+
+    # ── 外观 ──────────────────────────────────────────────────
+    def _style_header(self):
+        t = theme.current_theme()
+        muted, strong = t["text_muted"], t["text"]
+        # 选择器限定在 #processPane 上，避免 QSS 级联把正文的 messageBody
+        # 样式一起改掉（Qt 的样式表是往子控件继承的）。
+        self.setStyleSheet(
+            "#processPane { background: %s; border: 0.5px solid %s;"
+            " border-radius: 8px; }" % (t["surface_alt"], t["border"])
+        )
+        self._btn.setStyleSheet(
+            "QToolButton { border: 0; padding: 2px 0; background: transparent;"
+            f" color: {muted}; font-size: 12px; }}"
+            f"QToolButton:hover {{ color: {strong}; }}"
+        )
+
+    def _refresh_label(self):
+        arrow = "\u25be" if self._btn.isChecked() else "\u25b8"
+        if self._running:
+            text = f"{arrow} 正在处理 {_fmt_dur(self._elapsed)}"
+        elif self._steps:
+            text = f"{arrow} 已完成 {_fmt_dur(self._elapsed)} · {self._steps} 步"
+        else:
+            text = f"{arrow} 已完成 {_fmt_dur(self._elapsed)}"
+        self._btn.setText(text)
+
+    # ── 生命周期 ──────────────────────────────────────────────
+    def begin(self):
+        """进入运行态：显示面板、开始计时、保证展开。"""
+        if self._started is None:
+            self._started = time.monotonic()
+        self._running = True
+        self._elapsed = time.monotonic() - self._started
+        self.setVisible(True)
+        if not self._btn.isChecked() and not self._user_toggled:
+            self._set_checked(True)
+        self._timer.start()
+        self._refresh_label()
+
+    def append(self, md):
+        body = (md or "").strip("\n")
+        if not body:
+            return
+        # 过程里出现过失败就不自动收起：错误被折进"已完成"里，
+        # 用户会以为它成功了。
+        if "✕" in body or "失败" in body:
+            self._failed = True
+        self._md = (self._md + "\n\n" + body) if self._md else body
+        self._steps += 1
+        if self._btn.isChecked():
+            self._render()
+        self._refresh_label()
+
+    def finish(self, failed=False):
+        """任务结束：停表并按策略收起（用户手动展开过就尊重用户）。"""
+        self._timer.stop()
+        self._running = False
+        if self._started is not None:
+            self._elapsed = time.monotonic() - self._started
+        keep_open = failed or self._failed or self._user_toggled
+        if self._btn.isChecked() and not keep_open:
+            self._set_checked(False)
+        self._refresh_label()
+
+    # ── 内部 ──────────────────────────────────────────────────
+    def _set_checked(self, value):
+        self._silent = True
+        self._btn.setChecked(value)
+        self._silent = False
+
+    def _on_toggled(self, checked):
+        if not self._silent:
+            self._user_toggled = True
+        self._view.setVisible(checked)
+        if checked:
+            self._render()
+        self._refresh_label()
+
+    def _render(self):
+        self._view.setHtml(render_markdown(self._md))
+        self._rendered = True
+        self._fit()
+
+    def _fit(self):
+        if not self._view.isVisible():
+            return
+        doc = self._view.document()
+        # 减去左右 margin（8+8）和圆角装饰，别让正文顶到边框上
+        doc.setTextWidth(max(self.width() - 22, 180))
+        self._view.setFixedHeight(int(doc.size().height()) + 4)
+
+    def refit(self):
+        """外部（气泡 _adjust）在宽度变化后重新排版。"""
+        self._fit()
+
+    def _tick(self):
+        if self._started is None:
+            return
+        self._elapsed = time.monotonic() - self._started
+        self._refresh_label()
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self._fit()
+
+    def refresh_theme(self):
+        self._style_header()
+        if self._btn.isChecked():
+            self._render()
+
+
 class MessageBubble(QFrame):
     """消息气泡 — v0.6.0 扁平时间线设计。
 
@@ -345,6 +542,9 @@ class MessageBubble(QFrame):
         self._content = content
         # v0.5.5 P0：流式期间走纯文本增量插入，结束后才做一次全量 Markdown 渲染
         self._streaming = False
+        # v0.8.4：尚未确定归属的叙述文本。工具调用前它属于"过程"，
+        # 流结束时它属于"最终回答"——这条边界决定了折叠面板里装什么。
+        self._say = ""
         self._collapsed = (role == "tool" and self.TOOL_DENSITY != "detailed")
         t = theme.current_theme()
         m = t.metrics
@@ -391,9 +591,9 @@ class MessageBubble(QFrame):
             theme.named(stamp, "timeLabel")
             header.addWidget(stamp)
             header.addStretch()
-            actions = (("copy", "复制", lambda: self.copy_requested.emit(role, self._content)),
-                       ("insert", "插入到编辑器", lambda: self.insert_requested.emit(self._content)),
-                       ("retry", "重试", lambda: self.retry_requested.emit(self._content)))
+            actions = (("copy", "复制", lambda: self.copy_requested.emit(role, self._render_text())),
+                       ("insert", "插入到编辑器", lambda: self.insert_requested.emit(self._render_text())),
+                       ("retry", "重试", lambda: self.retry_requested.emit(self._render_text())))
             if role == "user":
                 actions = actions[:1]
             self._action_icons = []
@@ -403,6 +603,11 @@ class MessageBubble(QFrame):
                 header.addWidget(b)
                 self._action_icons.append((b, name))
         lay.addLayout(header)
+
+        # v0.8.4：过程折叠面板。放在正文之上——折叠态它就是一行摘要，
+        # 展开态才把工具卡片和中间叙述铺开。
+        self._process = ProcessPane(self)
+        lay.addWidget(self._process)
 
         # ── 内容区 ──
         self._view = MessageView()
@@ -431,7 +636,7 @@ class MessageBubble(QFrame):
             index = int(href.split(":", 1)[1])
         except (ValueError, IndexError):
             return
-        blocks = extract_code_blocks(self._content)
+        blocks = extract_code_blocks(self._render_text())
         if not (0 <= index < len(blocks)):
             return
         code = blocks[index][1]
@@ -472,6 +677,10 @@ class MessageBubble(QFrame):
         # 一条短消息也能占掉半屏（实拍里就是这样）。Maximum 表示"只能收到
         # sizeHint 高度"，气泡就永远贴着内容。
         self.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Maximum)
+        try:
+            self._process.refit()
+        except AttributeError:
+            pass
         if self._view.isHidden():
             return
         d = self._view.document()
@@ -499,7 +708,8 @@ class MessageBubble(QFrame):
             self._stream.reset()
             self._prefix = ""
             self._pending = ""
-        self._view.setHtml(render_markdown(self._content))
+        self._process.refresh_theme()
+        self._view.setHtml(render_markdown(self._render_text()))
         self._adjust()
 
     def is_streaming(self):
@@ -526,20 +736,25 @@ class MessageBubble(QFrame):
         self._streaming = False
         self._flush_timer.stop()
         self._pending = ""
+        self.commit_say()
         self._view.setHtml(render_markdown(self._content))
         self._adjust()
 
+    def _render_text(self):
+        """正文的完整文本 = 已确定的正文 + 尚未归属的叙述。"""
+        return self._content + self._say
+
     def append(self, text):
-        self._content += text
+        self._say += text
         if self._streaming:
             self._pending += text
             if not self._flush_timer.isActive():
                 self._flush_timer.start()
         else:
-            self._view.setHtml(render_markdown(self._content))
+            self._view.setHtml(render_markdown(self._render_text()))
             self._adjust()
 
-    def append_block(self, text):
+    def append_block(self, text, kind="result"):
         """插入一"整段"内容（工具卡片、状态行、检查点），而不是流式 delta。
 
         和 ``append`` 的区别在边界：流式 delta 必须原样首尾相接，而这里
@@ -547,19 +762,71 @@ class MessageBubble(QFrame):
         一行上——实测：工具卡片的收尾 ``` 撞上后续正文 "合适。" 变成
         "```合适。"，围栏再也合不上，后面整段回复（含表格、粗体）全被
         吞进代码块里，看起来就是"Markdown 完全不渲染"。
+
+        ``kind="process"`` 的内容进折叠面板而不是正文：工具调用卡片、
+        工具结果行、轮次状态行都属于"过程"，不该占着最终回答的位置。
         """
         body = text.strip("\n")
         if not body:
             return
+        if kind == "process":
+            self.add_process(body)
+            return
+        # 卡片（diff / 检查点 / 警告）是"结果"，先给待定叙述定性，
+        # 再把它续在正文末尾，保证顺序和折叠面板的边界一致。
+        self.commit_say()
         lead = "" if not self._content.strip() else "\n\n"
-        self.append(lead + body + "\n\n")
+        self._content += lead + body + "\n\n"
+        if self._streaming:
+            self._stream.reset()
+            self._prefix = ""
+        self._view.setHtml(render_markdown(self._content))
+        self._adjust()
+
+    # ── v0.8.4：过程 / 正文 的归属 ─────────────────────────────
+    def commit_say(self):
+        """把待定叙述定性为正文（不会再被折叠）。"""
+        if self._say:
+            self._content += self._say
+            self._say = ""
+
+    def archive_say(self):
+        """把待定叙述搬进过程面板：它后面跟着工具调用，所以不是结论。"""
+        text = self._say
+        if not text.strip():
+            return
+        self._say = ""
+        if self._streaming:
+            self._stream.reset()
+            self._prefix = ""
+        self._process.append(text)
+        self._view.setHtml(render_markdown(self._content))
+        self._adjust()
+
+    def add_process(self, text):
+        """直接追加一条过程内容（工具卡片 / 结果行 / 状态行）。"""
+        self._process.begin()
+        self._process.append(text)
+        self._adjust()
+
+    def begin_process(self):
+        """工具调用开始：把此前的叙述归档，并保证面板在运行态展开。"""
+        self.archive_say()
+        self._process.begin()
+
+    def finish_process(self, failed=False):
+        """这一轮结束：把尾部叙述定性为结论，停表并按策略收起。"""
+        self.commit_say()
+        self._view.setHtml(render_markdown(self._content))
+        self._adjust()
+        self._process.finish(failed=failed)
 
     def _flush_stream(self):
         """把这一帧的增量并入文档：已提交块拼接 + 尾块覆盖。"""
         if not self._streaming:
             return
         self._pending = ""
-        reset, new_blocks, tail = self._stream.update(self._content)
+        reset, new_blocks, tail = self._stream.update(self._render_text())
         if reset:
             self._prefix = ""
         if new_blocks:
@@ -572,13 +839,14 @@ class MessageBubble(QFrame):
         self._flush_timer.stop()
         self._pending = ""
         self._content = text
+        self._say = ""
         self._stream.reset()
         self._prefix = ""
         self._view.setHtml(render_markdown(text))
         self._adjust()
 
     def get_content(self):
-        return self._content
+        return self._render_text()
 
     def resizeEvent(self, e):
         super().resizeEvent(e)
@@ -3311,7 +3579,7 @@ class CopilotChatPanel(QWidget):
                 if self._current_bubble:
                     self._current_bubble.append_block(
                         f"🔄 **自动续跑 {n}/{m}** — 已用满 {hard} 轮预算，"
-                        "继续执行（不需要回复「继续」）")
+                        "继续执行（不需要回复「继续」）", kind="process")
                 self._queue_agent_note(
                     "[系统] 工具预算已自动续期，任务状态未丢失。"
                     "请接着完成剩余工作，不要复述已完成的步骤；"
@@ -3343,7 +3611,7 @@ class CopilotChatPanel(QWidget):
             if self._current_bubble:
                 self._current_bubble.append_block(
                     f"🟡 已用 {self._tool_round} 轮，已提醒模型收束"
-                    f"（{tail}，不会中断）")
+                    f"（{tail}，不会中断）", kind="process")
 
         # ── Cline 风格：写操作先展示 diff、逐项批准，显式挂起 Agent 循环 ──
         if self._needs_approval_tool_calls(tool_calls):
@@ -3373,12 +3641,17 @@ class CopilotChatPanel(QWidget):
         for tc in tool_calls:
             fn = tc.get("function", {}).get("name", "?")
             args_raw = tc.get("function", {}).get("arguments", "{}")
-            tool_blocks.append(
-                f"🔧 **{fn}**\n\n```json\n{_format_tool_args(args_raw)}\n```")
+            hint = _brief_tool_args(args_raw)
+            # 过程面板里一步一行；完整参数在审批卡 / 审计里还能查。
+            # 用 ▸ 而不是 🔧：几何字符和面板头部的箭头同一套语言，18px 下
+            # 也不会像彩色 emoji 那样抢眼。
+            tool_blocks.append(f"▸ **{fn}**" + (f" `{hint}`" if hint else ""))
 
         if self._current_bubble:
+            # v0.8.4：工具卡片进折叠面板，不占最终回答的位置
+            self._current_bubble.begin_process()
             self._current_bubble.append_block(
-                "---\n\n" + "\n\n".join(tool_blocks))
+                "\n\n".join(tool_blocks), kind="process")
 
         base_dir = self._get_project_root()
         self._pending_tool_calls = list(tool_calls)
@@ -3463,7 +3736,8 @@ class CopilotChatPanel(QWidget):
             if self._current_bubble:
                 icon = "✓" if "错误" not in result[:20] else "!"
                 self._current_bubble.append_block(
-                    f"**{icon} {fn}** → {_polish_tool_text(result_preview, keep_mark=False)}")
+                    f"**{icon} {fn}** → {_polish_tool_text(result_preview, keep_mark=False)}",
+                    kind="process")
 
             if result.startswith('{"action": "resolve_conflict"'):
                 try:
@@ -3474,7 +3748,7 @@ class CopilotChatPanel(QWidget):
                             {"role": "user", "content": resolution_text})
                         if self._current_bubble:
                             self._current_bubble.append_block(
-                                "**正在解决冲突…**")
+                                "**正在解决冲突…**", kind="process")
                 except (json.JSONDecodeError, KeyError) as e:
                     logger.debug("Conflict resolution parsing error: %s", e)
 
@@ -3491,7 +3765,7 @@ class CopilotChatPanel(QWidget):
                 card.set_checkpoint(cp_id)
             elif self._current_bubble:
                 self._current_bubble.append_block(
-                    f"检查点 `{cp_id}`（可用工具栏 ↩ 撤销本步）")
+                    f"检查点 `{cp_id}`（可用工具栏 ↩ 撤销本步）", kind="process")
 
         self._set_status(last_result_summary)
         # v0.7.9：写盘改动送编辑器做内联 diff 复核（Cursor 式）
@@ -4000,6 +4274,8 @@ class CopilotChatPanel(QWidget):
         self._flush_chunks()
         if self._current_bubble:
             self._current_bubble.end_stream()
+            # v0.8.4：这一轮结束，过程面板停表并按策略收起
+            self._current_bubble.finish_process()
         self._current_bubble = None
         self._agent_active = False
         self._tc_handled = False

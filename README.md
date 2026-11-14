@@ -25,9 +25,70 @@ Spyder 独立安装包把自带环境目录设成只读 ACL，`pip` 默认会落
 2. **工具 → 偏好设置 → 插件 → Copilot Chat** 勾选启用。
 3. 回到面板，设置里选模型 provider。Copilot 走设备流授权，DeepSeek / OpenAI / Anthropic / Ollama 等填 API key。
 
-升级时重跑同一条命令即可；卸载用 `pip uninstall SpyderCopilotChat`。
+升级时重跑同一条命令即可；卸载见下面的[卸载](#卸载)。
 
 如果 `pip` 指向了别的 Python，用 Spyder 自带解释器的完整路径（`python.exe -m pip install ...`）来装。
+
+## 卸载
+
+先**完全退出 Spyder**（含托盘图标）。运行中的进程握着插件模块，Windows 上这时卸载会有一半文件删不掉，留下一个 import 就报错的空壳。
+
+### 一条命令删掉代码
+
+```bash
+python -m pip uninstall SpyderCopilotChat
+```
+
+解释器要对得上，`pip` 未必是 Spyder 用的那个。先查清楚装在哪：
+
+```bash
+python -c "import spyder_copilot_chat, sys; print(spyder_copilot_chat.__file__); print(sys.executable)"
+```
+
+第一行是包的实际位置，第二行就是该拿去卸载的解释器。Spyder 独立安装包的解释器在 `<Spyder 安装目录>\envs\spyder-runtime\python.exe`。装过两份（比如又给 Anaconda 装了一次）就分别在各自解释器里各卸一次。
+
+验证：
+
+```bash
+python -c "import spyder_copilot_chat"   # 期望 ModuleNotFoundError
+ls "$APPDATA/Python/Python312/site-packages" | grep -i copilot    # Windows
+ls ~/.local/lib/python3.*/site-packages | grep -i copilot          # macOS / Linux
+```
+
+历史版本重装时改名留下的 `spydercopilotchat-*.dist-info.bak` 不在安装清单里，`pip` 不会碰它们，手动删掉就行。重启 Spyder，侧栏面板才会彻底消失。
+
+### 配置和数据要不要一起删
+
+装在 `~/.spyder_copilot_chat`（Windows 是 `%USERPROFILE%\.spyder_copilot_chat`），`pip uninstall` 不会动它：
+
+| 文件 / 目录 | 里面是什么 | 删掉的后果 |
+|---|---|---|
+| `config.json` | API Key、模型、字号字体等全部设置 | 重装后要重新填 Key |
+| `tokens.json` | GitHub Copilot 设备流令牌 | 重装后要重新授权 |
+| `history/`、`sessions/` | 聊天记录与会话 | 历史对话不能再打开 |
+| `attachments/` | 粘贴 / 拖入的图片文件 | 旧消息里的图变成空引用 |
+| `audit/` | 每天一份的工具调用审计 JSONL | 操作留痕丢失 |
+| `checkpoints/`、`index/` | 改文件前的快照、仓库索引 | 没影响，用到时会重建 |
+
+**彻底删干净**（含 Key 与聊天记录）：
+
+```bash
+rmdir /s /q "%USERPROFILE%\.spyder_copilot_chat"                      # Windows cmd
+Remove-Item -Recurse -Force "$env:USERPROFILE\.spyder_copilot_chat"   # Windows PowerShell
+rm -rf ~/.spyder_copilot_chat                                         # macOS / Linux
+```
+
+**只清掉设置、保留聊天记录**：删 `config.json` 一个文件即可。
+
+**只注销插件、保留配置**：不删这个目录，重装后 Key、模型、历史原样都在。
+
+### Spyder 偏好里还留着一行
+
+`~/.spyder-py3/config/spyder.ini` 里的 `[copilot_chat]` 段（`enable = True` 一类）由 Spyder 自己保存，卸载 wheel 不会清除。留着无害，重装后插件直接是启用状态；想回到从没装过的状态，就把 `copilot_chat/` 开头的行删掉，或在 工具 → 偏好设置 → 插件 里取消勾选。
+
+### 想装回来
+
+重跑安装那条命令即可。数据目录没删的话，Key、令牌、模型、聊天记录都不用重新配。
 
 ## 它长什么样
 

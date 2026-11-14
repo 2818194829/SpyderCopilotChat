@@ -774,6 +774,13 @@ def get_provider_config():
         "azure_resource": cfg.get("azure_resource", ""),
         "font_size": cfg.get("font_size", 14),
         "ui_font_size": cfg.get("ui_font_size", 13),
+        # v0.8.8：外观四项原先没进这份 dict，面板里 get() 永远拿到默认值——
+        # 于是在「外观」页选了浅色 / 紧凑，保存后一点反应都没有。
+        "ui_theme": cfg.get("ui_theme", "auto"),
+        "ui_accent": cfg.get("ui_accent", theme.DEFAULT_ACCENT),
+        "ui_density": cfg.get("ui_density", "comfortable"),
+        "tool_density": cfg.get("tool_density", "balanced"),
+        "font_family": cfg.get("font_family", ""),
         # Cline Edition (v0.5.6)
         "default_mode": cfg.get("default_mode", "act"),
         "approval_policy": cfg.get("approval_policy", "writes"),
@@ -1295,14 +1302,28 @@ class SettingsDialog(QDialog):
         form.addRow("工具痕迹密度:", self._tool_density)
 
         self._font_size_spin = QSpinBox()
-        self._font_size_spin.setRange(9, 32)
+        # 上限跟着 theme.FONT_STEPS 走：面板里的 Aa 菜单能把字号推到 36，
+        # 设置页却卡在 32 的话，从菜单调上去再进设置页会被"看不见地"夹回来。
+        self._font_size_spin.setRange(9, max(theme.FONT_STEPS))
         self._font_size_spin.setSuffix(" px")
+        self._font_size_spin.setToolTip(
+            "对话正文的字号。面板顶栏的 Aa 按钮和 Ctrl+滚轮调的是同一项，"
+            "改完立即生效并记住。")
         form.addRow("正文字体大小:", self._font_size_spin)
 
         self._ui_font_size_spin = QSpinBox()
-        self._ui_font_size_spin.setRange(9, 24)
+        self._ui_font_size_spin.setRange(9, 32)
         self._ui_font_size_spin.setSuffix(" px")
+        self._ui_font_size_spin.setToolTip(
+            "顶栏、按钮、状态行等界面元素的字号。")
         form.addRow("界面字体大小:", self._ui_font_size_spin)
+
+        self._font_family = QComboBox()
+        for label, value in theme.FONT_CHOICES:
+            self._font_family.addItem(label, value)
+        self._font_family.setToolTip(
+            "正文与界面使用的字体族。代码块始终用等宽字体，不受这里影响。")
+        form.addRow("字体:", self._font_family)
         lay.addLayout(form)
 
         tip = QLabel(
@@ -1321,9 +1342,13 @@ class SettingsDialog(QDialog):
         tab = QWidget()
         layout = QVBoxLayout(tab)
         lbl = QLabel(
-            "Spyder Copilot Chat v0.7.8 · Clarity Edition\n\n"
+            "Spyder Copilot Chat v0.8.8 · Readable Edition\n\n"
             "将 GitHub Copilot Chat 移植到 Spyder 6，并加入 Cline 式工作流：\n"
             "Plan / Act 双模式、内联审批卡片 + diff 预览、检查点一键撤销。\n\n"
+            "v0.8.8 修掉「字号太小还调不动」：Markdown 的段落 / 引用 / 列表\n"
+            "原来没写 font-size，回落到宋体 9pt，所以正文字号怎么调都没反应；\n"
+            "现在正文严格等于 font_size，顶栏 Aa、Ctrl+= / Ctrl+- / Ctrl+0、\n"
+            "Ctrl+滚轮都能调，外观页的主题 / 密度也真正生效了。\n"
             "v0.7.8 让字号与图标跟上设置：任务面板改用 ui_font 并把状态换成矢量\n"
             "图标，Plan/Act 与 Agent 选择器改成「图标 + 文案 + 箭头」的胶囊，\n"
             "发送按钮同高同圆角，气泡里的彩色 emoji 换成单色记号。\n"
@@ -1562,7 +1587,8 @@ class SettingsDialog(QDialog):
                 (self._ui_theme, "ui_theme", "auto"),
                 (self._ui_accent, "ui_accent", theme.DEFAULT_ACCENT),
                 (self._ui_density, "ui_density", "comfortable"),
-                (self._tool_density, "tool_density", "balanced")):
+                (self._tool_density, "tool_density", "balanced"),
+                (self._font_family, "font_family", "")):
             idx = combo.findData(self._config.get(key, default))
             if idx >= 0:
                 combo.setCurrentIndex(idx)
@@ -1659,6 +1685,7 @@ class SettingsDialog(QDialog):
         self._config["ui_accent"] = self._ui_accent.currentData()
         self._config["ui_density"] = self._ui_density.currentData()
         self._config["tool_density"] = self._tool_density.currentData()
+        self._config["font_family"] = self._font_family.currentData() or ""
         self._config["agent_mode"] = self._agent_enabled.isChecked()
         self._config["auto_execute"] = self._auto_execute.isChecked()
         self._config["default_mode"] = self._default_mode.currentData()

@@ -2,6 +2,37 @@
 
 只记录对使用者有影响的变更。最新的在最上面。
 
+## v0.8.8：Readable Edition（字号终于真的能调）
+
+反馈是「字号太小，而且还不能调整字体」。查下来不是一个 bug，是三个叠在一起：
+
+| # | 问题 | 后果 |
+|---|---|---|
+| 1 | Markdown 的**段落 / 引用 / 列表**没写 `font-size` | 它们回落到 `QTextDocument` 的默认字体。中文 Windows 上是**宋体 9pt（≈12px）**，比设定值小一大截 |
+| 2 | `get_provider_config()` 漏了 `ui_theme` / `ui_accent` / `ui_density` / `tool_density` | 「外观」页选了浅色、紧凑，保存后 `_apply_theme` 里 `.get()` 永远拿默认值，一点反应都没有 |
+| 3 | 字号入口埋在「设置 → 外观」 | 用户根本找不到；也没有滚轮 / 快捷键 |
+
+第 1 条是「调不动」的真正原因：只有**标题和代码块**写了字号，所以把「正文字体大小」从 14 拉到 32，你会看到代码变大、正文纹丝不动——看起来就像设置失效。
+
+| 改动 | 说明 |
+|---|---|
+| 段落 / 引用 / 列表补字号 | 现在正文严格等于 `font_size`；列表容器带字号、`<li>` 继承 |
+| 文档默认字体兜底 | `MessageView` 每次 `setHtml` 后把文档默认字体对齐主题。`<br>` 空行、流式期间的尾块这些"没写在 HTML 里"的文本也跟着正文走，不会突然掉回 9pt |
+| 顶栏 Aa 菜单 | 正文字号档位 12–36、界面字号 ±、字体族（系统 / 雅黑 / 思源 / 等宽）、一键恢复默认。当前档位带勾选 |
+| 快捷键 | `Ctrl+=` 放大、`Ctrl+-` 缩小、`Ctrl+0` 还原；焦点在输入框里也生效（`WidgetWithChildrenShortcut`） |
+| Ctrl + 滚轮 | 在对话流上滚动一格 = 一档，对标浏览器 / VS Code |
+| 配置穿透修正 | 外观四项 + `font_family` 进入 `get_provider_config`，外观页现在真的能换主题 / 密度 |
+| 过程面板摘要行 | 原来写死 12px，界面字号调到 18 时它还是 12。改成跟随 `ui_font` |
+| 设置页 | 正文字号上限跟 `theme.FONT_STEPS` 对齐（36），新增「字体」下拉 |
+
+调字号只改 `config.json` 的 `font_size` / `ui_font_size` / `font_family` 三个键，并且**不会**把 `get_provider_config()` 派生出来的只读字段（label / chat_endpoint / supports_agent…）写回配置文件。
+
+同一段对话，14px vs 20px：
+
+![字号对比](docs/images/font-size-compare-dark.png)
+
+测试：`dist/preview/test_v088.py` 40/40，覆盖 HTML 带字号、文档默认字体、外观四项穿透、字体族、Aa 菜单档位与勾选、三个快捷键、滚轮两向、落盘不污染配置、已存在消息按新字号重排。
+
 ## v0.8.7：Blind Write Edition（用 run_command 写盘也要看得见红绿）
 
 反馈是「改了文件，编辑器里一点颜色都没有，连一句失败提示都没有」。

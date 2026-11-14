@@ -2,7 +2,7 @@
 
 把 **GitHub Copilot Chat** 搬进 Spyder 6：侧栏对话、Agent 自动改代码、改动直接标成红绿行等你逐处接受。
 
-![version](https://img.shields.io/badge/version-0.8.7-blue)
+![version](https://img.shields.io/badge/version-0.8.8-blue)
 ![python](https://img.shields.io/badge/python-3.9%2B-blue)
 ![spyder](https://img.shields.io/badge/Spyder-6.x-8A2BE2)
 ![license](https://img.shields.io/badge/license-MIT-green)
@@ -70,6 +70,14 @@ Spyder 独立安装包把自带环境目录设成只读 ACL，`pip` 默认会落
 危险操作（删除、危险命令）不参与批量批准，这时条上只写「还有 N 项危险操作」，必须回到卡片看过 diff 再逐项点。
 
 ![审批](docs/images/approval-bar-light.png)
+
+## 字号与字体
+
+顶栏的 **A** 按钮（或 `Ctrl+=` / `Ctrl+-` / `Ctrl+0`，也可以在对话流里 **Ctrl + 滚轮**）直接调正文字号，档位 12–36px；菜单里还能单独调界面字号、换字体族（系统 / 雅黑 / 思源黑体 / 等宽）。改完立即重排已有消息并写进 `config.json`，重启后保持。
+
+![字号对比](docs/images/font-size-compare-dark.png)
+
+`font_size` 是正文，`ui_font_size` 是顶栏、按钮、状态行，`font_family` 是字族（空 = 跟随系统）。代码块始终用等宽字体，不受 `font_family` 影响。
 
 ## 安装位置
 

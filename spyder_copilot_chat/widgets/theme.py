@@ -200,6 +200,17 @@ DENSITY_CHOICES = [
     ("宽松", "spacious"),
 ]
 
+#: 正文字族。留空 = 跟随系统（QSS 里的默认栈）。
+FONT_CHOICES = [
+    ("跟随系统", ""),
+    ("微软雅黑 / 苹方", "'Microsoft YaHei','PingFang SC'"),
+    ("思源黑体 / Noto", "'Source Han Sans SC','Noto Sans CJK SC'"),
+    ("等宽（Consolas）", "'Cascadia Code','Consolas',monospace"),
+]
+
+#: 正文字号档位：面板里的 Aa 菜单和滚轮缩放都按这张表走。
+FONT_STEPS = [12, 13, 14, 15, 16, 18, 20, 22, 24, 28, 32, 36]
+
 TOOL_DENSITY_CHOICES = [
     ("Compact — 只留结果", "compact"),
     ("Balanced — 关键步骤（推荐）", "balanced"),
@@ -220,7 +231,7 @@ class Theme(object):
     """一次解析出的完整主题；属性访问 token，也支持 ``t['key']``。"""
 
     def __init__(self, tokens, accent_key=DEFAULT_ACCENT, density="comfortable",
-                 ui_font=13, body_font=14, accent_hex=None):
+                 ui_font=13, body_font=14, accent_hex=None, font_family=""):
         self._t = dict(tokens)
         dark = tokens["name"] == "dark"
         if accent_key not in ACCENTS:
@@ -245,6 +256,10 @@ class Theme(object):
         self.metrics = dict(_DENSITY[self.density])
         self.ui_font = int(ui_font)
         self.body_font = int(body_font)
+        # 字体族：QSS 用整串（带引号和回退栈），QFont 用第一个可用名字。
+        self.font_family = (font_family or "").strip() or _FONT_UI
+        first = self.font_family.split(",")[0].strip().strip("'\"")
+        self.font_family_name = first if first != _FONT_UI else ""
 
     def __getitem__(self, key):
         return self._t[key]
@@ -408,7 +423,7 @@ def _hue_gap(color_a, color_b):
 
 
 def resolve_theme(preference="auto", accent=DEFAULT_ACCENT, density="comfortable",
-                  ui_font=13, body_font=14):
+                  ui_font=13, body_font=14, font_family=""):
     """把用户偏好解析成一个 Theme 实例。
 
     preference="auto" 时完整跟随宿主：底色取 IDE 底板，正文取 IDE 文字色，
@@ -433,7 +448,7 @@ def resolve_theme(preference="auto", accent=DEFAULT_ACCENT, density="comfortable
                     # 宿主用了非常规色相（自定义主题），跟着它，并推到可读。
                     accent_hex = _readable(highlight, bg, 4.5, dark)
     return Theme(tokens, accent, density, ui_font, body_font,
-                 accent_hex=accent_hex)
+                 accent_hex=accent_hex, font_family=font_family)
 
 
 # 当前主题（模块级单例）：供 HTML 渲染器 / diff 预览读取颜色。
@@ -508,6 +523,9 @@ _ICONS = {
                   ("poly", [(5.6, 5.6), (7.7, 7.7), (16.3, 16.3), (18.4, 18.4)]),
                   ("poly", [(18.4, 5.6), (16.3, 7.7), (7.7, 16.3), (5.6, 18.4)])],
     "more":      [("dot", (6, 12, 1.5)), ("dot", (12, 12, 1.5)), ("dot", (18, 12, 1.5))],
+    # 字母 A：字号入口。比放大镜/齿轮更像"字体"，也不和设置按钮撞脸。
+    "font":      [("poly", [(6, 19), (12, 5), (18, 19)]),
+                  ("line", (8.4, 14, 15.6, 14))],
     "send":      [("poly", [(5, 12), (19, 5), (15, 19), (12, 14), (5, 12)]),
                   ("line", (12, 14, 19, 5))],
     "stop":      [("rect", (6, 6, 12, 12, 2))],
@@ -920,7 +938,7 @@ QMenu::separator {{ background: {t['border']}; }}
 QWidget#chatRoot, QWidget#standaloneRoot {{
     background: {t['bg']};
     color: {t['text']};
-    font-family: {_FONT_UI};
+    font-family: {t.font_family};
     font-size: {ui}px;
 }}
 QWidget#chatHeader {{
@@ -1048,7 +1066,7 @@ QToolButton#iconBtn[active="true"] {{
     border: 1px solid {t['accent']};
 }}
 QPushButton {{
-    font-family: {_FONT_UI};
+    font-family: {t.font_family};
     font-size: {sm}px;
     border-radius: {max(5, radius - 3)}px;
     padding: 5px 12px;
@@ -1219,7 +1237,7 @@ QTextEdit#messageBody {{
     background: transparent;
     border: none;
     color: {t['text']};
-    font-family: {_FONT_UI};
+    font-family: {t.font_family};
     font-size: {body}px;
     selection-background-color: {t['selection']};
     padding: 0;
@@ -1291,7 +1309,7 @@ QPlainTextEdit#composerInput {{
     background: transparent;
     border: none;
     color: {t['text']};
-    font-family: {_FONT_UI};
+    font-family: {t.font_family};
     font-size: {body}px;
     selection-background-color: {t['selection']};
     padding: 0;
@@ -1412,7 +1430,7 @@ QLineEdit, QSpinBox, QDoubleSpinBox, QTextEdit, QPlainTextEdit {{
     border-radius: {max(5, radius - 3)}px;
     padding: 4px 8px;
     selection-background-color: {t['selection']};
-    font-family: {_FONT_UI};
+    font-family: {t.font_family};
     font-size: {sm}px;
 }}
 QLineEdit:focus, QSpinBox:focus, QDoubleSpinBox:focus {{

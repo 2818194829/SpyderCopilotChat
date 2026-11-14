@@ -349,8 +349,18 @@ v0.8.7 "Blind Write Edition" — 用 run_command 写盘时也必须出现红绿�
   - 新增 docs/images/inline-editor-{dark,light}.png：装饰走真实的
     TextDecorationsManager 出图，过滤规则与现场一致
 
+v0.8.8 (readable)：字号太小、还调不动 —— 三个 bug 叠在一起
+  - markdown 的段落 / 引用 / 列表没写 font-size，全回落到
+    QTextDocument 默认字体（中文 Windows 是宋体 9pt ≈ 12px）。
+    于是「正文字体大小」调到 32 也只有标题和代码块会变
+  - get_provider_config() 漏了 ui_theme / ui_accent / ui_density /
+    tool_density 四项，外观页选了浅色、紧凑也毫无反应
+  - 入口太深：顶栏新增 Aa 菜单（档位 12~36、界面字号、字体族），
+    并支持 Ctrl+= / Ctrl+- / Ctrl+0 与对话流里 Ctrl+滚轮
+  - 消息视图兜底设置文档默认字体，<br> 空行、流式尾块也跟着正文走
+
 """
 
-__version__ = "0.8.7"
-__edition__ = "blind_write"
+__version__ = "0.8.8"
+__edition__ = "readable"
 

@@ -550,7 +550,9 @@ def _render_list_items(nodes, pal, size):
     if not nodes:
         return ""
     tag = "ol" if nodes[0]["ordered"] else "ul"
-    out = [f'<{tag} style="margin:2px 0 {_para_gap(size)}px 0;">']
+    # 字号写在列表容器上，<li> 继承；不写会掉回文档默认字体（同段落）
+    out = [f'<{tag} style="margin:2px 0 {_para_gap(size)}px 0;'
+           f'font-size:{size}px;line-height:1.62;">']
     for nd in nodes:
         body = _inline(nd["text"])
         if nd.get("task") is not None:
@@ -719,14 +721,18 @@ def _render_block(block, pal, size, state):
                 'style="margin:4px 0 10px 0;"><tr>'
                 f'<td width="3" style="background:{pal["border_strong"]};"></td>'
                 f'<td style="padding:5px 10px;background:{pal["surface"]};'
-                f'color:{pal["text_muted"]};">{body}</td></tr></table>')
+                f'color:{pal["text_muted"]};font-size:{size}px;">{body}</td>'
+                '</tr></table>')
 
     if kind == "list":
         return _render_list(block, pal, size)
 
     body = "<br>".join(_inline(l) for l in block["lines"])
+    # font-size 必须写：不写就回落到 QTextDocument 的默认字体（中文 Windows
+    # 上是宋体 9pt），比正文小一大截，而且「正文字体大小」怎么调都调不动——
+    # 这正是「字号太小还不能调整」的全部原因。
     return (f'<p style="margin:0 0 {_para_gap(size)}px 0;'
-            f'line-height:1.62;">{body}</p>')
+            f'font-size:{size}px;line-height:1.62;">{body}</p>')
 
 
 # ── 块级 HTML 缓存 ───────────────────────────────────────────────────

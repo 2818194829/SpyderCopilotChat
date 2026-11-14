@@ -20,9 +20,9 @@ import time
 import weakref
 
 from qtpy.QtCore import QPoint, Qt, Signal, QThread, QTimer, QSize
-from qtpy.QtGui import QTextCursor
+from qtpy.QtGui import QCursor, QFont, QKeySequence, QTextCursor
 from qtpy.QtWidgets import (
-    QApplication, QFrame, QHBoxLayout,
+    QAction, QApplication, QFrame, QHBoxLayout,
     QLabel, QListWidget, QListWidgetItem, QMenu, QMessageBox,
     QPlainTextEdit, QProgressBar, QPushButton, QScrollArea, QSizePolicy,
     QTextEdit, QToolButton, QToolTip, QVBoxLayout, QWidget,
@@ -328,6 +328,25 @@ class WelcomeCard(QFrame):
             theme.accent_icon("spark").pixmap(QSize(24, 24)))
 
 
+class ZoomScrollArea(QScrollArea):
+    """对话流滚动区：Ctrl+滚轮 = 调正文字号（对标浏览器 / VS Code）。
+
+    普通滚轮照旧滚动；Ctrl 按住时把滚动事件吃掉，别让"放大"顺带把内容
+    滚走。``zoom_requested`` 带方向（+1 放大 / -1 缩小），由面板决定档位。
+    """
+
+    zoom_requested = Signal(int)
+
+    def wheelEvent(self, event):  # noqa: N802 - Qt 接口
+        if event.modifiers() & Qt.ControlModifier:
+            delta = event.angleDelta().y()
+            if delta:
+                self.zoom_requested.emit(1 if delta > 0 else -1)
+                event.accept()
+                return
+        super().wheelEvent(event)
+
+
 class MessageView(QTextEdit):
     """消息正文视图。
 
@@ -352,6 +371,30 @@ class MessageView(QTextEdit):
         # 也跟着算错。改成固定像素折行，排版权归调用方。
         self.setLineWrapMode(QTextEdit.FixedPixelWidth)
         self.viewport().setCursor(Qt.ArrowCursor)
+        self.apply_theme_font()
+
+    # ── 字体 ──────────────────────────────────────────────────
+    def apply_theme_font(self):
+        """把文档默认字体对齐主题。
+
+        HTML 里每段都写了 font-size，但有三种东西漏网：``<br>`` 造成的空行、
+        流式期间还没成形的尾块、以及某些 Qt 版本对 ``<p>`` 之外元素的处理。
+        它们都会回落到 QTextDocument 的默认字体——中文 Windows 上是宋体
+        9pt（约 12px），比正文小一大截，看起来就是「字号调了没用」。
+        这里兜底设一次，让任何漏网文本都用正文的字号和字族。
+        """
+        t = theme.current_theme()
+        f = QFont(self.font())
+        fam = getattr(t, "font_family_name", "")
+        if fam:
+            f.setFamily(fam)
+        f.setPixelSize(max(10, int(getattr(t, "body_font", 14))))
+        self.document().setDefaultFont(f)
+
+    def setHtml(self, html):  # noqa: N802 - Qt 接口
+        # setHtml 会清空文档，默认字体不一定跟着留下；每次写完再对齐一次。
+        super().setHtml(html)
+        self.apply_theme_font()
 
     def _href_at(self, pos):
         try:
@@ -472,6 +515,9 @@ class ProcessPane(QFrame):
     def _style_header(self):
         t = theme.current_theme()
         muted, strong = t["text_muted"], t["text"]
+        # 字号跟界面的 ui_font 走：写死 12px 的话，界面调到 18px 时
+        # 这行「已完成 12s · 3 步」还是只有 12px，和其余文字差一截。
+        summary_px = max(11, int(t.ui_font) - 2)
         # 选择器限定在 #processPane 上，避免 QSS 级联把正文的 messageBody
         # 样式一起改掉（Qt 的样式表是往子控件继承的）。
         self.setStyleSheet(
@@ -480,7 +526,7 @@ class ProcessPane(QFrame):
         )
         self._btn.setStyleSheet(
             "QToolButton { border: 0; padding: 2px 0; background: transparent;"
-            f" color: {muted}; font-size: 12px; }}"
+            f" color: {muted}; font-size: {summary_px}px; }}"
             f"QToolButton:hover {{ color: {strong}; }}"
         )
 
@@ -828,6 +874,9 @@ class MessageBubble(QFrame):
             self._pending = ""
         self._process.refresh_theme()
         self._view.setHtml(render_markdown(self._render_text()))
+        # 字号/字族变了，同一份 HTML 的高度也跟着变；不重排就会留着旧高度，
+        # 大字号被裁掉、小字号底部露出一大块空白。
+        self._adjust()
         self._adjust()
 
     def is_streaming(self):
@@ -1769,6 +1818,7 @@ class CopilotChatPanel(QWidget):
         self._apply_font_size()
         self._setup_ui()
         self._apply_font_size_to_ui()
+        self._install_font_shortcuts()
         self._add_welcome()
         self._refresh_usage_ui()
         # 启动后异步拉取 Copilot 模型列表（不阻塞 UI）
@@ -1816,6 +1866,163 @@ class CopilotChatPanel(QWidget):
         ChatInput.set_font_size(fs)
         self.set_ui_font_size(uifs)
 
+    # ── 字号 / 字体（v0.8.8）──────────────────────────────────
+    #
+    # 为什么要有这一层：设置页里的两个 spinbox 太深了，用户根本找不到，
+    # 反馈就变成"字号太小、还不能调"。这里给出三条随手可用的入口：
+    # 顶栏 Aa 菜单、Ctrl+= / Ctrl+- / Ctrl+0、对话流里 Ctrl+滚轮。
+    # 三者改的是同一份配置（config.json 的 font_size / ui_font_size /
+    # font_family），改完立即重绘并落盘。
+
+    def _body_font_size(self):
+        try:
+            return int(self._config.get("font_size", 14))
+        except (TypeError, ValueError):
+            return 14
+
+    def _ui_font_size(self):
+        try:
+            return int(self._config.get("ui_font_size", 13))
+        except (TypeError, ValueError):
+            return 13
+
+    def _persist_font(self, **changes):
+        """写回 config.json。
+
+        注意不能直接 ``save_config(self._config)``：``_config`` 是
+        ``get_provider_config()`` 派生出来的字典，里面有 label / chat_endpoint
+        / supports_agent 这类只读字段，写回去会把配置文件弄脏。
+        """
+        for key, value in changes.items():
+            self._config[key] = value
+        try:
+            cfg = load_config()
+            cfg.update(changes)
+            save_config(cfg)
+        except Exception as exc:
+            logger.debug("保存字号设置失败: %s", exc)
+
+    def _apply_font_now(self):
+        """字号变了：重算 QSS + 让每条已存在的消息按新字号重排。"""
+        self._apply_font_size()
+        self._apply_theme()
+
+    def _set_body_font(self, size):
+        size = max(9, min(max(theme.FONT_STEPS), int(size)))
+        if size == self._body_font_size():
+            return
+        self._persist_font(font_size=size)
+        self._apply_font_now()
+        self._set_status(f"正文字号 {size}px（Ctrl+= / Ctrl+- 继续调整）")
+
+    def _bump_body_font(self, direction):
+        """按档位表走：滚轮一格 = 一档，不会 1px 1px 磨。"""
+        cur = self._body_font_size()
+        steps = theme.FONT_STEPS
+        if direction > 0:
+            nxt = next((s for s in steps if s > cur), steps[-1])
+        else:
+            nxt = next((s for s in reversed(steps) if s < cur), steps[0])
+        self._set_body_font(nxt)
+
+    def _set_ui_font(self, size):
+        size = max(9, min(32, int(size)))
+        if size == self._ui_font_size():
+            return
+        self._persist_font(ui_font_size=size)
+        self._apply_font_now()
+        self._set_status(f"界面字号 {size}px")
+
+    def _bump_ui_font(self, direction):
+        self._set_ui_font(self._ui_font_size() + (1 if direction > 0 else -1))
+
+    def _set_font_family(self, family):
+        self._persist_font(font_family=family or "")
+        self._apply_font_now()
+        label = next((lbl for lbl, val in theme.FONT_CHOICES
+                      if val == (family or "")), family or "跟随系统")
+        self._set_status(f"字体：{label}")
+
+    def _reset_fonts(self):
+        self._persist_font(font_size=14, ui_font_size=13, font_family="")
+        self._apply_font_now()
+        self._set_status("字号与字体已恢复默认")
+
+    def _popup_font_menu(self, *_args):
+        """顶栏 Aa：重建菜单再弹（档位与勾选状态每次都现算）。"""
+        menu = getattr(self, "_font_menu", None)
+        if menu is None:
+            return
+        menu.clear()
+        t = theme.current_theme()
+        icon = lambda name: theme.make_icon(name, t["text_muted"])  # noqa: E731
+
+        head = menu.addAction(f"正文字号 {self._body_font_size()} px")
+        head.setEnabled(False)
+        bigger = menu.addAction(icon("plus"), "放大\tCtrl+=")
+        bigger.triggered.connect(lambda: self._bump_body_font(1))
+        smaller = menu.addAction(icon("minus"), "缩小\tCtrl+-")
+        smaller.triggered.connect(lambda: self._bump_body_font(-1))
+
+        menu.addSeparator()
+        for step in theme.FONT_STEPS:
+            act = menu.addAction(f"{step} px")
+            act.setCheckable(True)
+            act.setChecked(step == self._body_font_size())
+            act.triggered.connect(
+                lambda _c=False, s=step: self._set_body_font(s))
+
+        menu.addSeparator()
+        ui_head = menu.addAction(f"界面字号 {self._ui_font_size()} px")
+        ui_head.setEnabled(False)
+        ui_up = menu.addAction("界面放大")
+        ui_up.triggered.connect(lambda: self._bump_ui_font(1))
+        ui_dn = menu.addAction("界面缩小")
+        ui_dn.triggered.connect(lambda: self._bump_ui_font(-1))
+
+        menu.addSeparator()
+        sub = menu.addMenu("字体")
+        theme.style_popup(sub, t)
+        cur_family = str(self._config.get("font_family", "") or "")
+        for label, value in theme.FONT_CHOICES:
+            act = sub.addAction(label)
+            act.setCheckable(True)
+            act.setChecked(value == cur_family)
+            act.triggered.connect(
+                lambda _c=False, v=value: self._set_font_family(v))
+
+        menu.addSeparator()
+        reset = menu.addAction("恢复默认（正文 14 / 界面 13）")
+        reset.triggered.connect(self._reset_fonts)
+
+        btn = getattr(self, "_font_btn", None)
+        if btn is not None:
+            menu.popup(btn.mapToGlobal(QPoint(0, btn.height() + 4)))
+        else:
+            menu.popup(QCursor.pos())
+
+    def _install_font_shortcuts(self):
+        """Ctrl+= / Ctrl+- / Ctrl+0。
+
+        用 QAction + WidgetWithChildrenShortcut 而不是 QShortcut：焦点在
+        composer（QPlainTextEdit）里时快捷键也要生效，只有挂成"子控件范围"
+        才收得到。
+        """
+        self._font_actions = []
+        bindings = (
+            (("Ctrl+=", "Ctrl++", "Ctrl+Shift+="), lambda: self._bump_body_font(1)),
+            (("Ctrl+-", "Ctrl+Shift+-"), lambda: self._bump_body_font(-1)),
+            (("Ctrl+0",), self._reset_fonts),
+        )
+        for sequences, handler in bindings:
+            act = QAction(self)
+            act.setShortcutContext(Qt.WidgetWithChildrenShortcut)
+            act.setShortcuts([QKeySequence(s) for s in sequences])
+            act.triggered.connect(handler)
+            self.addAction(act)
+            self._font_actions.append(act)
+
+
     def _apply_theme(self):
         """v0.6.0：把主题 / 强调色 / 密度 / 字号 / 工具痕迹密度一次装到整棵控件树。
 
@@ -1828,6 +2035,7 @@ class CopilotChatPanel(QWidget):
             str(self._config.get("ui_density", "comfortable")),
             int(self._config.get("ui_font_size", 13)),
             int(self._config.get("font_size", 14)),
+            str(self._config.get("font_family", "")),
         )
         theme.apply_theme(self, t)
         MessageBubble.set_tool_density(
@@ -1862,6 +2070,7 @@ class CopilotChatPanel(QWidget):
 
         # 菜单 / 弹出下拉是独立窗口，不继承面板 QSS
         for popup in (getattr(self, "_menu", None),
+                      getattr(self, "_font_menu", None),
                       getattr(self, "_mode_menu", None),
                       getattr(self, "_agent_menu", None),
                       getattr(self, "_editor_menu", None),
@@ -1952,6 +2161,20 @@ class CopilotChatPanel(QWidget):
         self._provider_label.setToolTip(self._provider_text())
         h.addWidget(self._provider_label)
 
+        # ── 字号入口（v0.8.8）──
+        # 用户找不到「设置 → 外观」里那个 spinbox，反馈就是「字号太小还不能
+        # 调」。把入口放到顶栏：一个 Aa，点开就是放大 / 缩小 / 预设 / 字体。
+        self._font_btn = theme.icon_button(
+            "font",
+            "字号与字体（Ctrl+= 放大 · Ctrl+- 缩小 · Ctrl+0 还原 · Ctrl+滚轮）",
+            28)
+        self._font_btn.clicked.connect(self._popup_font_menu)
+        self._icon_buttons.append((self._font_btn, "font"))
+        h.addWidget(self._font_btn)
+        self._font_menu = QMenu(self)
+        theme.named(self._font_menu, "overflowMenu")
+        theme.style_popup(self._font_menu, t)
+
         self._new_chat_btn = theme.icon_button("plus", "新建对话（清空当前会话）", 28)
         self._new_chat_btn.clicked.connect(self._clear_chat)
         self._icon_buttons.append((self._new_chat_btn, "plus"))
@@ -2011,6 +2234,9 @@ class CopilotChatPanel(QWidget):
         self._appearance_action = self._menu.addAction(
             theme.make_icon("spark", t["text_muted"]), "外观与主题",
             lambda: self._open_settings("外观"))
+        self._menu.addAction(
+            theme.make_icon("font", t["text_muted"]), "字号与字体…",
+            self._popup_font_menu)
 
         # ── Plan / Act：下拉式模式选择器（放进底部 composer） ──
         # v0.7.8：胶囊换成 theme.pill（图标 + 文案 + 矢量箭头）。旧的
@@ -2047,8 +2273,9 @@ class CopilotChatPanel(QWidget):
         layout.addWidget(self._todo_panel)
 
         # ── 对话流 ──
-        self._scroll = QScrollArea()
+        self._scroll = ZoomScrollArea()
         theme.named(self._scroll, "stream")
+        self._scroll.zoom_requested.connect(self._bump_body_font)
         self._scroll.setWidgetResizable(True)
         self._scroll.setFrameShape(QFrame.NoFrame)
         # 对话流永远不横向滚动：一条长路径就能把内容顶宽，底部那条横向

@@ -4485,7 +4485,8 @@ class CopilotChatPanel(QWidget):
             self._add_msg(
                 "assistant",
                 f"✓ 内联 diff 自检已生效：已在编辑器里打开 `{name}`，"
-                "应当看到红色删除线、绿色新增行，右上角有「接受修改 / 撤销」，"
+                "应当看到红色删除线、绿色新增行，顶部有「接受全部修改 / "
+                "不接受本次修改」，"
                 "鼠标移到改动处还有 ✓ / ✕。\n\n"
                 "这是**副本**，你的原文件没有被改动；看完直接关掉这个标签页即可。"
                 "如果这里仍然看不到颜色，说明渲染被别的插件覆盖了，"
@@ -4613,10 +4614,13 @@ class CopilotChatPanel(QWidget):
         if staged:
             names = "、".join(os.path.basename(p) for p, _t in items[:3])
             more = "" if len(items) <= 3 else f" 等 {len(items)} 个文件"
+            count_note = (f"（共 {len(items)} 个文件）" if len(items) > 1 else "")
             self._current_bubble.append_block(
-                f"已在编辑器中高亮 {names}{more} 的修改："
-                "悬停查看逐处 ✓ / ✕，或用顶部按钮「接受修改 / 全部接受 / 撤销」"
-                "（Ctrl+Enter 全部接受，Ctrl+Backspace 全部撤销）")
+                f"已在编辑器中高亮 {names}{more}{count_note} 的修改："
+                "顶部工具条写着「第几个/共几个」，按钮为「接受全部修改 / "
+                "不接受本次修改」；多文件时另有「接受本文件 / 不接受本文件」，"
+                "悬停改动处还有逐处 ✓ / ✕"
+                "（Ctrl+Enter 全部接受，Ctrl+Backspace 全部不接受）")
         if failures and not staged:
             # 静默跳过是最难查的失败：把原因直接摆到对话里。
             # 路径为空表示整批级失败（拿不到编辑器 / 登记处建不起来），

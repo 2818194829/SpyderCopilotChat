@@ -284,6 +284,11 @@ sb = Sandbox()
 edt = mkeditor(OLD)
 r = ed.InlineReview(edt, sb.path, OLD)
 r.stage()
+# v0.8.10：快捷键与顶部「接受全部修改 / 不接受本次修改」同义，都是发
+# 广播信号，由 ReviewHub 落到每一个会话。裸会话（没有 hub）就必须自己
+# 接上，否则按下去只是发了没人听的信号。
+r.request_accept_all.connect(r.accept_all)
+r.request_reject_all.connect(r.revert_all)
 
 
 def press(widget, key, mods=Qt.ControlModifier):
@@ -300,15 +305,17 @@ def press(widget, key, mods=Qt.ControlModifier):
 
 
 press(edt, Qt.Key_Return)
-check("Ctrl+Enter 全部接受", edt.toPlainText() == NEW,
+check("Ctrl+Enter 接受全部修改", edt.toPlainText() == NEW,
       repr(edt.toPlainText()[-40:]))
 
 sb = Sandbox()
 edt = mkeditor(OLD)
 r = ed.InlineReview(edt, sb.path, OLD)
 r.stage()
+r.request_accept_all.connect(r.accept_all)
+r.request_reject_all.connect(r.revert_all)
 press(edt, Qt.Key_Backspace)
-check("Ctrl+Backspace 全部撤销", edt.toPlainText() == OLD,
+check("Ctrl+Backspace 不接受本次修改", edt.toPlainText() == OLD,
       repr(edt.toPlainText()[-40:]))
 
 sb = Sandbox()

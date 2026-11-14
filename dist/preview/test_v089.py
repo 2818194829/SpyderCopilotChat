@@ -213,10 +213,13 @@ if bar is not None:
     bar.show()
     for _ in range(3):
         APP.processEvents()
-    for text, btn in (("接受修改", bar._accept), ("撤销", bar._revert)):
+    for text, btn in (("接受全部修改", bar._accept_all),
+                      ("不接受本次修改", bar._reject_all)):
         need = btn.fontMetrics().horizontalAdvance(text)
         check("按钮放得下「%s」" % text, btn.width() >= need,
               "宽 %d / 需要 %d" % (btn.width(), need))
+    check("本文件级按钮已收进行内 ✓/✗ 与快捷键",
+          not hasattr(bar, "_accept") and not hasattr(bar, "_revert"))
     check("工具条高度合理", 20 <= bar.height() <= 90, bar.height())
 
 # ── 3) 单个文件失败不影响同批其它文件 ─────────────────────────

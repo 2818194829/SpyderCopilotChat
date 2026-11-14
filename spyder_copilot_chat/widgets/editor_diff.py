@@ -13,8 +13,10 @@ editor_diff — 把 Agent 的写盘结果变成编辑器里的「内联 diff 复
 - **词级高亮**：成对的删/增行里，只把真正变化的字符段再加一层深色。
 - **按钮**：
   - 悬停到某一处修改，行尾浮出 ✓ / ✗（接受 / 撤销这一处）；
-  - 视口顶部常驻一条工具栏：「接受修改」「全部接受」「撤销」；
-  - 快捷键与 Cursor 一致：Ctrl+Enter 全部接受、Ctrl+Backspace 全部撤销。
+  - 视口顶部常驻一条工具栏：报「第几个 / 共几个文件」+ 增删行数，
+    并给「接受全部修改」「不接受本次修改」两个总开关；多文件时另有
+    「接受本文件」「不接受本文件」；
+  - 快捷键与 Cursor 一致：Ctrl+Enter 全部接受、Ctrl+Backspace 全部不接受。
 - **安全**：staging 前若编辑器有未保存内容则直接放弃（不碰用户
   buffer）；复核期间拦截 Ctrl+S / Ctrl+Z（否则会把「幽灵删除行」存进
   文件或打散块标记）；一切落盘都走 Spyder 自己的 ``EditorStack.save``，
@@ -34,8 +36,8 @@ import os
 from qtpy.QtCore import QObject, QEvent, Qt, QTimer, Signal
 from qtpy.QtGui import QBrush, QColor, QTextBlockUserData, QTextCharFormat, QTextCursor
 from qtpy.QtWidgets import (
-    QFrame, QHBoxLayout, QLabel, QToolButton, QTextEdit, QVBoxLayout,
-    QWidget,
+    QFrame, QHBoxLayout, QLabel, QSizePolicy, QToolButton, QTextEdit,
+    QVBoxLayout, QWidget,
 )
 
 from . import theme
@@ -214,7 +216,24 @@ class ReviewStripe(QWidget):
 
 
 class ReviewBar(QFrame):
-    """视口顶部右侧的常驻工具栏：接受修改 / 全部接受 / 撤销。"""
+    """视口顶部右侧的常驻工具栏：文件计数 + 两个总开关。
+
+    版式::
+
+        [2/3 文件 · +5 −1 · 3 处修改]        [接受全部修改] [不接受本次修改]
+
+    - 两个按钮**始终**在，是用户对「本次这一批改动」的总开关（等价
+      Cursor 的 Keep All / Reject All）。旧版把它们叫「全部接受 / 撤销」，
+      前者只在多文件时露面、后者只作用于当前文件，于是用户要的那个
+      「全部拒绝」根本不存在。
+    - 标签永远报「一共几个文件 / 现在是第几个」：切了三次 tab 之后，
+      用户才知道还剩几个没决定。
+    - 编辑区常常只有 500px 宽，本文件级的操作因此不占按钮位——行内
+      悬停有逐处 ✓ / ✗，Ctrl+Enter / Ctrl+Backspace 与两个按钮同义
+      （都是全局），避免「按钮管全局、快捷键管本文件」的错位。
+    - 标签按可用宽度三级降级，绝不许把按钮挤出右边界：
+      全量 → 去掉 ± 行数 → 只留「2/3 文件」。
+    """
 
     def __init__(self, review):
         super().__init__(review.editor.viewport())
@@ -223,42 +242,54 @@ class ReviewBar(QFrame):
         self.setAttribute(Qt.WA_StyledBackground, True)
         self._apply_style()
         lay = QHBoxLayout(self)
-        lay.setContentsMargins(8, 4, 8, 4)
+        lay.setContentsMargins(12, 4, 6, 4)
         lay.setSpacing(6)
 
         self._label = QLabel("")
         self._label.setObjectName("inlineDiffLabel")
+        self._label.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Preferred)
         lay.addWidget(self._label)
 
-        self._accept = QToolButton()
-        self._accept.setObjectName("diffAcceptBtn")
-        self._accept.setText("接受修改")
-        self._accept.setToolTip("接受本文件的修改（Ctrl+Enter）")
-        self._accept.setCursor(Qt.PointingHandCursor)
-        self._accept.clicked.connect(review.accept_all)
-        lay.addWidget(self._accept)
+        #: 三级候选文案（由长到短），见 _fit_label
+        self._texts = ("", "", "")
+        self._text = ""
+        self._total = 1
 
-        self._accept_global = QToolButton()
-        self._accept_global.setObjectName("diffAcceptAllBtn")
-        self._accept_global.setText("全部接受")
-        self._accept_global.setToolTip("接受所有文件的全部修改")
-        self._accept_global.setCursor(Qt.PointingHandCursor)
-        self._accept_global.clicked.connect(
+        self._accept_all = self._mk_button(
+            "diffAcceptAllBtn", "接受全部修改",
+            "接受本次所有文件的所有修改（Ctrl+Enter）")
+        self._accept_all.clicked.connect(
             lambda: review.request_accept_all.emit())
-        lay.addWidget(self._accept_global)
 
-        self._revert = QToolButton()
-        self._revert.setObjectName("diffRevertBtn")
-        self._revert.setText("撤销")
-        self._revert.setToolTip("撤销本文件的修改（Ctrl+Backspace）")
-        self._revert.setCursor(Qt.PointingHandCursor)
-        self._revert.clicked.connect(review.revert_all)
-        lay.addWidget(self._revert)
+        self._reject_all = self._mk_button(
+            "diffRejectAllBtn", "不接受本次修改",
+            "放弃本次全部改动，所有文件恢复修改前的内容"
+            "（Ctrl+Backspace）")
+        self._reject_all.clicked.connect(
+            lambda: review.request_reject_all.emit())
+
+    def _buttons(self):
+        return (self._accept_all, self._reject_all)
+
+    def _mk_button(self, obj_name, text, tip):
+        btn = QToolButton()
+        btn.setObjectName(obj_name)
+        btn.setText(text)
+        btn.setToolTip(tip)
+        btn.setCursor(Qt.PointingHandCursor)
+        btn.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
+        self.layout().addWidget(btn)
+        return btn
 
     def _apply_style(self):
         t = theme.current_theme()
-        fs = max(11, t.ui_font - 2)
-        self.setStyleSheet(
+        # 工具条是辅助 UI：跟着界面字号走，但封顶 14px——用户把界面字号
+        # 调到 19 时，两个六字按钮会占掉半屏，反而看不见代码
+        fs = max(11, min(t.ui_font - 2, 14))
+        # 「接受全部修改」是实心绿：深色主题下绿底配深字才够对比，
+        # 浅色主题下绿底配白字。
+        on_add = "#0a1a12" if t.is_dark else "#ffffff"
+        qss = (
             "QFrame#inlineDiffBar {{"
             " background: {bg}; border: 1px solid {bd};"
             " border-radius: 8px; }}"
@@ -266,46 +297,106 @@ class ReviewBar(QFrame):
             " border: none; background: transparent; }}"
             "QToolButton {{"
             " background: {btn}; color: {fg}; border: 1px solid {bd};"
-            " border-radius: 6px; padding: 2px 10px; font-size: {fs}px; }}"
+            " border-radius: 6px; padding: 2px 9px; font-size: {fs}px; }}"
             "QToolButton:hover {{ border-color: {accent}; }}"
-            "QToolButton#diffAcceptBtn {{"
-            " background: {fill}; color: #ffffff; border: none; }}"
             "QToolButton#diffAcceptAllBtn {{"
-            " background: {addbg}; color: {addfg}; border: 1px solid {add}; }}"
-            "QToolButton#diffRevertBtn:hover {{"
-            " background: {delbg}; border-color: {delc}; color: {delfg}; }}".format(
-                bg=t["elevated"], bd=t["border_strong"], fg=t["text"],
-                btn=t["surface_alt"], accent=t["accent"],
-                fill=t["accent_fill"], fs=fs,
-                add=t["diff_add"], addbg=t["diff_add_bg"],
-                addfg=t["diff_add"],
-                delbg=t["diff_del_bg"], delfg=t["diff_del"],
-                delc=t["diff_del"]))
+            " background: {add}; color: {onadd}; border: 1px solid {add}; }}"
+            "QToolButton#diffAcceptAllBtn:hover {{"
+            " border-color: {fg}; }}"
+            "QToolButton#diffRejectAllBtn {{"
+            " background: {delbg}; color: {delfg}; border: 1px solid {delc}; }}"
+            "QToolButton#diffRejectAllBtn:hover {{"
+            " background: {delc}; color: #ffffff; border-color: {delc}; }}"
+        ).format(
+            bg=t["elevated"], bd=t["border_strong"], fg=t["text"],
+            btn=t["surface_alt"], accent=t["accent"], fs=fs,
+            add=t["diff_add"], onadd=on_add,
+            delc=t["diff_del"], delbg=t["diff_del_bg"], delfg=t["diff_del"])
+        self.setStyleSheet(qss)
 
-    def set_counts(self, hunks, plus, minus, global_count):
-        parts = []
+    def set_counts(self, hunks, plus, minus, global_count, index=0):
+        total = max(1, int(global_count or 1))
+        self._total = total
+        prog = ("{0}/{1} 文件".format(max(1, int(index or 1)), total)
+                if total > 1 else "")
+        count = "{0} 处修改".format(hunks) if hunks else "已处理"
+        delta = []
         if plus:
-            parts.append("+{0}".format(plus))
+            delta.append("+{0}".format(plus))
         if minus:
-            parts.append("−{0}".format(minus))
-        if hunks:
-            parts.append("{0} 处修改".format(hunks))
-        self._label.setText("  ".join(parts) if parts else "  已处理")
-        self._accept_global.setVisible(global_count > 1)
+            delta.append("−{0}".format(minus))
+        full = " · ".join([p for p in (prog, " ".join(delta), count) if p])
+        mid = " · ".join([p for p in (prog, count) if p])
+        self._texts = (full, mid, prog or count)
+        self._text = full
+        self._label.setText(full)
+        self._relayout()
+
+    def _relayout(self):
+        try:
+            view = self._review.editor.viewport()
+        except RuntimeError:
+            return
+        self._fit_label(max(240, view.width() - 44))
         self.adjustSize()
+        self.move(max(8, view.width() - self.width() - 22), 8)
+
+    def _fit_label(self, avail):
+        """标签吃软不吃硬：窗口不够宽先截标签，按钮一个都不许缩。
+
+        注意判可见性用 ``isHidden()`` 而不是 ``isVisible()``：工具条是
+        编辑器视口的子控件，首次 refresh 往往发生在视口自己 show 之前，
+        那时**所有**子控件的 ``isVisible()`` 都是 False——按它算宽度会把
+        按钮全当成不存在，标签就把整条撑到视口外面去（实测 717 vs 544）。
+        ``isHidden()`` 只反映「有没有被显式 hide」，正是这里要的语义。
+        """
+        shown = [b for b in self._buttons() if not b.isHidden()]
+        widths = sum(self._button_width(b) for b in shown)
+        margins = self.layout().contentsMargins()
+        spacing = self.layout().spacing() * (len(shown) + 1)
+        room = avail - widths - spacing - margins.left() - margins.right()
+        room = max(52, room)
+        fm = self._label.fontMetrics()
+        text = self._texts[-1]
+        for cand in self._texts:
+            if cand and fm.horizontalAdvance(cand) + 4 <= room:
+                text = cand
+                break
+        else:
+            text = fm.elidedText(self._texts[-1], Qt.ElideRight, int(room))
+        # 文本短就按文本宽度收窄：整条拉成通栏会压住第一行代码，
+        # 视觉上也不像「悬浮胶囊」而像多了一条标题栏。
+        want = min(room, fm.horizontalAdvance(text) + 6)
+        self._label.setText(text)
+        self._label.setFixedWidth(int(max(52, want)))
+
+    def _button_width(self, btn):
+        """按钮需要多宽——自己按字宽算，不信 QToolButton 的 sizeHint。
+
+        QToolButton 是「图标按钮」出身：只要没设 icon，很多样式下它给的
+        sizeHint 就是一个偏小的默认值（实测 17px 字号 + 六个汉字只报
+        60px），布局照着这个值分空间，文字就被压成「接受全部…」。直接
+        用 fontMetrics 量字宽，再加 QSS 的 9px 左右内边距兜住。
+        """
+        fm = btn.fontMetrics()
+        return max(64, fm.horizontalAdvance(btn.text()) + 24)
 
     def refresh(self):
         self._apply_style()
-        # 样式表里的 font-size / padding 要等 polish 之后才进 sizeHint。
+        # 样式表里的 font-size / padding 要等 polish 之后才进字体度量。
         # 首次 refresh 发生在 show() 之前，那时算出来的宽度偏小，
-        # 一旦定下来就不再变——「接受修改」会被挤成省略号。
+        # 一旦定下来就不再变——按钮文字会被挤成省略号。
         self.ensurePolished()
-        for btn in (self._accept, self._accept_global, self._revert):
+        for btn in self._buttons():
             btn.ensurePolished()
-            btn.setMinimumWidth(btn.sizeHint().width())
-        self.adjustSize()
-        view = self._review.editor.viewport()
-        self.move(max(8, view.width() - self.width() - 22), 8)
+            width = self._button_width(btn)
+            # setFixedWidth 而不是 setMinimumWidth：布局在空间不够时仍会
+            # 按 minimumSize 往里挤，固定宽度才真正"按钮一个都不许缩"
+            btn.setFixedWidth(width)
+            # QToolButton 是按"图标按钮"量高度的，没有 icon 时仍给一个
+            # 偏大的默认高度（实测 56px），整条压在代码上像块膏药。
+            btn.setFixedHeight(btn.fontMetrics().height() + 13)
+        self._relayout()
 
     def showEvent(self, event):
         super().showEvent(event)
@@ -318,8 +409,10 @@ class InlineReview(QObject):
 
     #: 会话结束（用户已作出决定并清理现场）
     resolved = Signal(object, str)     # (review, "keep"|"revert"|"mixed")
-    #: 用户点了「全部接受」，由插件广播到所有会话
+    #: 用户点了「全部接受修改」，由插件广播到所有会话
     request_accept_all = Signal()
+    #: 用户点了「不接受本次修改」，由插件广播到所有会话（含本文件）
+    request_reject_all = Signal()
 
     def __init__(self, editor, path, old_text, saver=None, parent=None):
         super().__init__(parent)
@@ -1050,19 +1143,23 @@ class InlineReview(QObject):
             self._stripe.update()
         if self._bar is not None:
             self._bar.refresh()
-            plus, minus = self.counts()
-            self._bar.set_counts(len(self.hunks()), plus, minus,
-                                 self._global_count)
+            self._push_counts()
         self._place_hunk_buttons()
 
     _global_count = 1
+    _global_index = 0
 
-    def set_global_count(self, count):
+    def _push_counts(self):
+        if self._bar is None:
+            return
+        plus, minus = self.counts()
+        self._bar.set_counts(len(self.hunks()), plus, minus,
+                             self._global_count, self._global_index)
+
+    def set_global_count(self, count, index=0):
         self._global_count = max(1, int(count))
-        if self._bar is not None:
-            plus, minus = self.counts()
-            self._bar.set_counts(len(self.hunks()), plus, minus,
-                                 self._global_count)
+        self._global_index = max(0, int(index or 0))
+        self._push_counts()
 
     def _place_hunk_buttons(self):
         if self._ok_btn is None:
@@ -1153,11 +1250,13 @@ class InlineReview(QObject):
                         return True   # 撤销会打散块标记
                     if (key in (Qt.Key_Return, Qt.Key_Enter) and
                             mods & Qt.ControlModifier):
-                        self.accept_all()
+                        # 与顶部「接受全部修改」同义（全局），别一边按钮管
+                        # 全部、一边快捷键只管当前文件
+                        self.request_accept_all.emit()
                         return True
                     if (key == Qt.Key_Backspace and
                             mods & Qt.ControlModifier):
-                        self.revert_all()
+                        self.request_reject_all.emit()
                         return True
                 elif obj is self.editor.viewport():
                     etype = event.type()
@@ -1238,6 +1337,7 @@ class ReviewHub(QObject):
             return None
         review.resolved.connect(self._on_resolved)
         review.request_accept_all.connect(self.accept_all)
+        review.request_reject_all.connect(self.reject_all)
         self._reviews[path] = review
         self._broadcast_count()
         return review
@@ -1249,6 +1349,18 @@ class ReviewHub(QObject):
             except Exception:
                 logger.debug("accept_all failed", exc_info=True)
 
+    def reject_all(self):
+        """「不接受本次修改」：所有文件全部恢复修改前的内容。
+
+        逐个走 ``revert_all``——每个会话自己 ``_finish`` 时按最终内容
+        比对新旧文本并回写磁盘，所以这里不需要额外的回滚逻辑。
+        """
+        for review in list(self.reviews()):
+            try:
+                review.revert_all()
+            except Exception:
+                logger.debug("reject_all failed", exc_info=True)
+
     def _on_resolved(self, review, action):
         self._reviews.pop(review.path, None)
         if self._notifier is not None:
@@ -1259,9 +1371,12 @@ class ReviewHub(QObject):
         self._broadcast_count()
 
     def _broadcast_count(self):
-        count = len(self.reviews())
-        for review in self.reviews():
-            review.set_global_count(count)
+        active = self.reviews()
+        count = len(active)
+        for i, review in enumerate(active, 1):
+            # 带上「第几个」：工具条要显示 2/3 这种进度，否则用户切 tab
+            # 时根本不知道还有几个文件没决定。
+            review.set_global_count(count, i)
 
     def shutdown(self):
         for review in list(self._reviews.values()):

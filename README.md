@@ -2,7 +2,7 @@
 
 把 **GitHub Copilot Chat** 搬进 Spyder 6：侧栏对话、Agent 自动改代码、改动直接标成红绿行等你逐处接受。
 
-![version](https://img.shields.io/badge/version-0.8.9-blue)
+![version](https://img.shields.io/badge/version-0.8.10-blue)
 ![python](https://img.shields.io/badge/python-3.9%2B-blue)
 ![spyder](https://img.shields.io/badge/Spyder-6.x-8A2BE2)
 ![license](https://img.shields.io/badge/license-MIT-green)
@@ -35,7 +35,7 @@ Spyder 独立安装包把自带环境目录设成只读 ACL，`pip` 默认会落
 
 ![对话内 diff](docs/images/chat-diff-light.png)
 
-编辑器内联 diff：改动直接铺进真实 buffer，顶部「接受修改 / 全部接受 / 撤销」，悬停行尾逐处 ✓ / ✕（`Ctrl+Enter` 全部接受，`Ctrl+Backspace` 全部撤销）。
+编辑器内联 diff：改动直接铺进真实 buffer，顶部工具条报「第几个 / 共几个文件 · 增删行数」，并给「接受全部修改 / 不接受本次修改」两个总开关，悬停行尾逐处 ✓ / ✕（`Ctrl+Enter` 接受全部，`Ctrl+Backspace` 全部不接受）。
 
 ![编辑器内联 diff](docs/images/inline-editor-light.png)
 

@@ -11,13 +11,44 @@
 
 ## 安装
 
+### 方式一：装发布版 wheel（推荐，不需要 Git）
+
 ```bash
-pip install --upgrade "git+https://github.com/2818194829/SpyderCopilotChat.git"
+python -m pip install --user --no-deps --upgrade "https://github.com/2818194829/SpyderCopilotChat/releases/download/v0.8.13/spydercopilotchat-0.8.13-py3-none-any.whl"
 ```
 
-不想让 pip 现场构建的话，也可以从 [Releases](https://github.com/2818194829/SpyderCopilotChat/releases) 直接下 `.whl` 再 `pip install spydercopilotchat-0.8.4-py3-none-any.whl`，内容一模一样。
+也可以打开 [Releases](https://github.com/2818194829/SpyderCopilotChat/releases) 手动下载最新版 `.whl`，再 `python -m pip install --user --no-deps 下载路径\spydercopilotchat-x.y.z-py3-none-any.whl`。URL 里的版本号换成页面上最新的那个。
 
-Spyder 独立安装包把自带环境目录设成只读 ACL，`pip` 默认会落到 user site，**不需要管理员权限**，插件入口点也正是从那里被发现。
+三个参数各有原因，别省：
+
+| 参数 | 为什么 |
+|---|---|
+| `--user` | Spyder 独立安装包的自带环境是只读的，插件必须落进 user site（`%APPDATA%\Python\Python3XX\site-packages`），Spyder 才能发现入口点。用系统 Python / Anaconda 装时若它自己的 site-packages 可写，pip 会装到那个 Python 的目录里，Spyder 根本看不见 |
+| `--no-deps` | `spyder` / `qtpy` / `requests` 由 Spyder 自带环境提供。若用别的 Python 装，pip 会为了满足 `spyder>=6.0` 把整套 Spyder + PyQt5 再拉一份进 user site；user site 优先级更高，会把 IDE 里的 Spyder 顶掉 |
+| `--upgrade` | 升级时覆盖旧版 |
+
+更省事的是直接用 Spyder 自带的解释器（依赖它自己就有，不需要 `--no-deps`）：
+
+```bash
+"<Spyder 安装目录>\envs\spyder-runtime\python.exe" -m pip install --user --upgrade <wheel 路径或 URL>
+```
+
+不需要管理员权限。
+
+### 方式二：装最新开发版（需要 Git）
+
+```bash
+python -m pip install --user --no-deps --upgrade "git+https://github.com/2818194829/SpyderCopilotChat.git"
+```
+
+这条命令要求本机装了 **Git for Windows** 且 `git.exe` 在 PATH 里。否则会报：
+
+```text
+ERROR: Error [WinError 2] 系统找不到指定的文件。 while executing command git version
+ERROR: Cannot find command 'git' - do you have 'git' installed and in your PATH?
+```
+
+这不是插件的问题：pip 要先用 `git clone` 把仓库拉到临时目录再现场构建，没 Git 就卡在第一步。两种解法——装 Git for Windows（安装时选 *Use Git from the Windows Command Prompt*，装完重开终端），或者直接用上面的方式一，一行装好、不需要 Git、也不现场构建。
 
 装完按这个顺序：
 
@@ -25,9 +56,9 @@ Spyder 独立安装包把自带环境目录设成只读 ACL，`pip` 默认会落
 2. **工具 → 偏好设置 → 插件 → Copilot Chat** 勾选启用。
 3. 回到面板，设置里选模型 provider。Copilot 走设备流授权，DeepSeek / OpenAI / Anthropic / Ollama 等填 API key。
 
-升级时重跑同一条命令即可；卸载见下面的[卸载](#卸载)。
+想确认装对了：`python -c "import spyder_copilot_chat as p; print(p.__version__, p.__file__)"`，路径里应该有 user site（Windows 是 `AppData\Roaming\Python\...`）；如果指到别的 Python 的 `Lib\site-packages`，Spyder 是看不见的，按上面加 `--user` 重装一次。
 
-如果 `pip` 指向了别的 Python，用 Spyder 自带解释器的完整路径（`python.exe -m pip install ...`）来装。
+升级时重跑同一条命令即可；卸载见下面的[卸载](#卸载)。
 
 ## 卸载
 

@@ -28,6 +28,8 @@ API 402: {"error":{"message":"Insufficient Balance (request_id: d5e85940-...)",
 
 新增 `test_v093.py` 57 项：分类（402/401/429/模型/超长/422/5xx/超时/断网）、措辞（DeepSeek 与 Copilot 的 402 不串台）、脏输入（空体、HTML 网关页、10 万字符）、`ApiError` 结构化字段、真实 402 端到端（本地 HTTP 服务 → `ChatWorker.run()` → 断言发出来的是卡片且不含 traceback）、卡片进 Markdown 渲染器不翻车。
 
+**安装 / 卸载文档（README）**：原来只给 `pip install git+https://...`，没装 Git 的 Windows 机器会直接报 `Cannot find command 'git'`。现在把 Releases 的 `.whl` 改成推荐方式（一行命令，不依赖 Git、不现场构建），`git+` 留作开发版并写明前置条件；同时补上 `--user` / `--no-deps` 的原因——用系统 Python 装很容易把插件塞进它自己的 site-packages（Spyder 看不见），或者为了满足 `spyder>=6.0` 再拖一整套 Spyder + PyQt5 进 user site。另新增完整的「卸载」章节：多套解释器分别卸载、`~/.spyder_copilot_chat` 各类数据的删除后果、`spyder.ini` 里的 `[copilot_chat]` 段怎么清。
+
 ## v0.8.12：Vision Edition（截图可以直接粘进输入框）
 
 以前输入框只认文字，剪贴板里的截图粘进去要么没反应、要么变成一个乱码方块。现在三种入口都能用：**Ctrl+V 粘贴截图**、**把图片文件拖进来**、**点输入区左下角的图钉按钮选文件**。

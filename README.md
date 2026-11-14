@@ -29,7 +29,7 @@ python -m pip install --user --no-deps --upgrade --force-reinstall --no-cache-di
 
 `--force-reinstall` 和 `--no-cache-dir` 都别省：
 
-- `--force-reinstall`：pip 拿「已装的 0.8.21」和文件名里的 `0` 一比，会认为已经够新，直接跳过，什么都不装；
+- `--force-reinstall`：pip 会把「已装的旧版本」和文件名里的 `0` 一比，认为已经够新，直接跳过，什么都不装；
 - `--no-cache-dir`：绕开 pip 自己的 HTTP 缓存。早先 README 用的是 CDN 固定链接，缓存滞后把 0.8.21
   覆盖回 0.8.13 过两次，现象就是「装完重启，右侧刻度又没了」。这条命令不再经过 CDN。
 

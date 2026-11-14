@@ -956,6 +956,19 @@ QWidget#composerDock {{
 QWidget#streamInner {{ background: {t['bg']}; }}
 QScrollArea#stream {{ background: {t['bg']}; border: none; }}
 QScrollArea#stream > QWidget > QWidget {{ background: transparent; }}
+/* v0.8.17：对话流右侧的消息导航条。刻度由 paintEvent 自绘，这里只
+   负责底色透明与不要边框——不给它上色，免得盖住自绘的语义色。 */
+QFrame#messageRail {{
+    background: transparent;
+    border: none;
+}}
+/* v0.8.17：悬停展开的消息清单。面板内浮层，要盖住对话流，
+   所以必须有实心底 + 边界，不能像 rail 那样透明。 */
+QFrame#messageFlyout {{
+    background: {t['elevated']};
+    border: 1px solid {t['border_strong']};
+    border-radius: {radius}px;
+}}
 
 /* ── 品牌 / 顶栏 ──────────────────────────────────────── */
 QLabel#brandMark {{
@@ -1247,6 +1260,11 @@ QFrame#userBubble {{
     border: 1px solid {t['border']};
     border-left: 3px solid {t['accent']};
     border-radius: {radius}px;
+}}
+/* v0.8.17：从右侧导航条跳过来时闪 1.2 秒，视线能立刻落在目标消息上 */
+QFrame#userBubble[flash="true"] {{
+    border: 1px solid {t['accent']};
+    background: {t['accent_soft']};
 }}
 QFrame#assistantBubble {{ background: transparent; border: none; }}
 QFrame#toolBubble {{

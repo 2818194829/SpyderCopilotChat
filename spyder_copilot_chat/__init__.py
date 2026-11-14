@@ -493,10 +493,30 @@ v0.8.16 (verified)：拿真实 TokenHub Key 做线上验证后修掉两个 Hy4 �
   - FIM auto 后端默认地址同步；新增 test_v096.py 74 项（带 Key 时 83 项，
     含真实线上 /v1/models + chat + ChatWorker 端到端），全库 20 脚本全绿
 
+v0.8.17 (indexed)：对话流右侧多一条消息导航条，历史发过的话一点就回
+  - 对照参考截图补的缺口：长会话想找回自己问过的某句，只能一直往上滚
+  - MessageRail：一条刻度 = 一条用户消息，自绘 paintEvent，等距摆放
+    （按真实比例会让长回答里的几条消息挤成一坨）；当前视口那条用
+    accent 加粗放大，悬停给预览 tooltip，点刻度直接滚回去并闪 1.2s
+  - MessageFlyout：鼠标移到右缘展开完整清单，一行一条，点行跳转；
+    最多 24 行 + 「还有 N 条」提示；条数没变时只挪高亮不重建列表，
+    免得长清单的滚动位置被弹回顶部
+  - 浮层做成面板内子控件而不是 Qt.Popup——Popup 一出现就抓走鼠标，
+    视口收不到 MouseMove，「移开自动收起」会全部失效
+  - 导航条锚到 viewport 右缘而不是 scroll 右缘，避开 9px 竖滚动条；
+    面板缩放 / 滚动区几何变化 / 主题切换都会重新定位
+  - 设置页新增「消息导航条」开关（message_nav_enabled，默认开），
+    关掉立即收起；清空会话同步清索引，deleteLater 的半死气泡会被探活摘掉
+  - 修一个会让进程直接消失的坑：_refresh_rail 跑在 QTimer 槽里，首版
+    遗留一个未定义的 total，Qt 槽内未捕获异常会被 PyQt 直接 abort
+    （exit 127、无 traceback）。现在整段 try/except + 降级清空刻度
+  - 修浮层当前项不高亮：setSelected / setCurrentItem 必须先 addItem
+  - 深浅两套主题实拍 4 张；新增 test_v097.py 87 项，全库 21 脚本全绿
+
 """
 
-__version__ = "0.8.16"
-__edition__ = "verified"
+__version__ = "0.8.17"
+__edition__ = "indexed"
 
 # Spyder 把 stderr 的每一行都当成未处理异常弹「内部错误」窗口。包一加载
 # 就接管自己的日志出口，保证任何子模块 import 之前这条隔离已经生效。

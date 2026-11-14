@@ -19,8 +19,12 @@ import re
 import time
 import weakref
 
-from qtpy.QtCore import QPoint, Qt, Signal, QThread, QTimer, QSize
-from qtpy.QtGui import QCursor, QFont, QKeySequence, QPixmap, QTextCursor
+from qtpy.QtCore import (
+    QEvent, QPoint, QRect, QRectF, Qt, Signal, QThread, QTimer, QSize,
+)
+from qtpy.QtGui import (
+    QColor, QCursor, QFont, QKeySequence, QPainter, QPixmap, QTextCursor,
+)
 from qtpy.QtWidgets import (
     QAction, QApplication, QDialog, QFileDialog, QFrame, QHBoxLayout,
     QLabel, QListWidget, QListWidgetItem, QMenu, QMessageBox,
@@ -1195,6 +1199,28 @@ class MessageBubble(QFrame):
         super().resizeEvent(e)
         self._adjust()
 
+    def flash(self):
+        """跳转过来时闪一下：给个 1.2 秒的强调边框，视线能立刻定位。
+
+        走动态属性 + QSS 而不是动画：面板里已有 ``set_prop`` 这套机制，
+        主题切换时只需把属性清掉，不用管动画状态机。重复跳同一条也要
+        重新闪，所以先把属性清掉再设回去。
+        """
+        if self._role != "user":
+            return
+        try:
+            theme.set_prop(self, "flash", "false")
+            theme.set_prop(self, "flash", "true")
+        except RuntimeError:
+            return
+        QTimer.singleShot(1200, lambda: self._clear_flash())
+
+    def _clear_flash(self):
+        try:
+            theme.set_prop(self, "flash", "false")
+        except RuntimeError:
+            pass
+
 
 class ChatInput(QPlainTextEdit):
     """Composer 输入区 — 无边框，边框由外层统一容器提供。"""
@@ -2091,6 +2117,272 @@ class ParticipantDropdown(QFrame):
 
 
 # ===================================================================
+# 消息导航（v0.8.17）：右侧边栏 + 悬停列出「你发过的每条消息」
+# ===================================================================
+
+def nav_preview(content, limit=48):
+    """把一条用户消息压成列表里的一行。
+
+    多模态消息（``content`` 是 part 列表）与纯文本都要能吃：
+    先把首行压平（Markdown 标题、代码围栏、多余空白都去掉），再按字符
+    数截断——中英混排下 ``len`` 比像素更省事，配 ``ElideRight`` 收尾。
+    """
+    text = ""
+    if isinstance(content, str):
+        text = content
+    elif isinstance(content, list):
+        parts = [p.get("text", "") for p in content
+                 if isinstance(p, dict) and p.get("type") == "text"]
+        has_img = any(isinstance(p, dict) and p.get("type") == "image_url"
+                      for p in content)
+        text = " ".join(t for t in parts if t)
+        if has_img:
+            text = ("[图片] " + text).strip()
+    # 去掉 Markdown 装饰，让列表读起来像"你说过的话"而不是源码
+    text = re.sub(r"^\s*#{1,6}\s*", "", text.strip())
+    text = re.sub(r"^\s*[-*+]\s+", "", text)
+    text = re.sub(r"^\s*```\w*\s*$", "", text, flags=re.M)
+    text = re.sub(r"`{1,3}([^`]*)`{1,3}", r"\1", text)
+    text = re.sub(r"\[([^\]]*)\]\([^)]*\)", r"\1", text)   # 链接留文字
+    text = text.replace("\r\n", "\n").split("\n")[0].strip()
+    text = re.sub(r"\s+", " ", text)
+    if len(text) > limit:
+        text = text[:limit].rstrip() + "…"
+    return text or "（空消息）"
+
+
+class MessageRail(QFrame):
+    """对话流右侧的细导航条：每一道刻度 = 一条用户消息。
+
+    对标浏览器阅读进度条 / 聊天应用的右侧消息索引。常驻显示当前位置，
+    鼠标移上去（或点击）弹出完整清单。刻度**等距摆放**而不是按消息在
+    文档里的真实比例——按真实比例摆的话，长问答里几条用户消息会挤在
+    顶部叠成一坨，既点不中也看不清。
+
+    自绘而不是堆一堆小 QWidget：几十条消息就是几十个控件，滚动时逐个
+    重排既慢又容易在 deleteLater 期间摸到半死对象。一个 paintEvent 全画完。
+    """
+
+    locate = Signal(int)      # 请求滚动到第 index 条用户消息
+    hovered = Signal(int)     # 悬停到某条（-1 = 离开）
+    flyout_requested = Signal()
+
+    WIDTH = 14
+    TICK_H = 4
+    TICK_W = 8
+    CUR_H = 14
+    CUR_W = 12
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        theme.named(self, "messageRail")
+        self.setFixedWidth(self.WIDTH)
+        self.setCursor(Qt.PointingHandCursor)
+        self.setMouseTracking(True)
+        self.setAttribute(Qt.WA_Hover, True)
+        #: [提示文本] —— 只存 tip，位置由 _tick_rects 现算
+        self._ticks = []
+        self._index = -1        # 当前视口最靠上的一条用户消息
+        self._hover = -1
+        self._hover_bg = False
+        self.setVisible(False)
+
+    def set_ticks(self, ticks, current=-1):
+        """ticks: ``[(ratio, tooltip), ...]``；current 为高亮项下标。"""
+        self._ticks = list(ticks or [])
+        self._index = int(current)
+        if self._hover >= len(self._ticks):
+            self._hover = -1
+        self.setVisible(bool(self._ticks))
+        self.update()
+
+    def _tick_rects(self):
+        """每道刻度居中对齐在左缘，当前项更高更宽。
+
+        等距排布：间距按可用高度和条数算，但不小于 ``TICK_H + 4``，
+        超过就让它溢出——宁可让最后几条压到边界，也不要把 20 条消息
+        压进 40px 里变成一根实线。
+        """
+        n = len(self._ticks)
+        if n <= 0:
+            return []
+        h = max(1, self.height())
+        step = self.TICK_H + 4
+        if n > 1:
+            # 尽量铺满，但间距不小于 8px
+            step = max(step, min(28, (h - self.CUR_H) // max(1, n - 1)))
+        total = self.CUR_H + step * (n - 1)
+        start = max(2, (h - total) // 2)
+        rects = []
+        for i in range(n):
+            y = start + step * i
+            if i == self._index:
+                w, hh = self.CUR_W, self.CUR_H
+            elif i == self._hover:
+                w, hh = self.TICK_W + 2, self.TICK_H + 2
+            else:
+                w, hh = self.TICK_W, self.TICK_H
+            rects.append(QRect((self.WIDTH - w) // 2, int(y), w, hh))
+        return rects
+
+    def paintEvent(self, _event):  # noqa: N802 - Qt 接口
+        t = theme.current_theme()
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing, True)
+        p.setPen(Qt.NoPen)
+        rects = self._tick_rects()
+        if not rects:
+            p.end()
+            return
+        # 悬停时先铺一层极淡的轨道，让"这里可以点"这件事被发现
+        if self._hover_bg or self._hover >= 0:
+            p.setBrush(QColor(t["surface_alt"]))
+            p.drawRoundedRect(
+                QRectF(self.rect()).adjusted(1.5, 0, -1.5, 0), 7, 7)
+        for i, r in enumerate(rects):
+            if i == self._index:
+                p.setBrush(QColor(t["accent"]))
+            elif i == self._hover:
+                p.setBrush(QColor(t["text"]))
+            else:
+                p.setBrush(QColor(t["text_muted"]))
+            p.drawRoundedRect(QRectF(r), r.width() / 2.0, r.width() / 2.0)
+        p.end()
+
+    def _index_at(self, pos):
+        rects = self._tick_rects()
+        if not rects:
+            return -1
+        best, best_d = -1, 1e9
+        for i, r in enumerate(rects):
+            d = abs(pos.y() - r.center().y())
+            if d < best_d:
+                best, best_d = i, d
+        return best if best_d <= 16 else -1
+
+    def enterEvent(self, event):  # noqa: N802 - Qt 接口
+        self._hover_bg = True
+        self.update()
+        super().enterEvent(event)
+
+    def leaveEvent(self, event):  # noqa: N802 - Qt 接口
+        self._hover_bg = False
+        self._hover = -1
+        self.setToolTip("")
+        self.hovered.emit(-1)
+        self.update()
+        super().leaveEvent(event)
+
+    def mouseMoveEvent(self, event):  # noqa: N802 - Qt 接口
+        i = self._index_at(event.pos())
+        if i != self._hover:
+            self._hover = i
+            self.hovered.emit(i)
+            self.update()
+        if 0 <= i < len(self._ticks):
+            self.setToolTip(self._ticks[i][1])
+        else:
+            self.setToolTip("")
+        super().mouseMoveEvent(event)
+
+    def mouseReleaseEvent(self, event):  # noqa: N802 - Qt 接口
+        if event.button() != Qt.LeftButton:
+            return
+        i = self._index_at(event.pos())
+        if i >= 0:
+            self.locate.emit(i)
+        # 点空白处 = 打开清单，给"我只想看看发过什么"的用户一条路
+        else:
+            self.flyout_requested.emit()
+        super().mouseReleaseEvent(event)
+
+
+class MessageFlyout(QFrame):
+    """悬停展开的完整清单：一条用户消息一行，点一下跳过去。
+
+    做成**面板内的子控件**而不是 ``Qt.Popup`` 独立窗口：Popup 一出现就
+    抓走鼠标，视口再也收不到 ``MouseMove``，"鼠标移开自动收起"这类交互
+    全部失效，只能靠点击关闭。子控件还顺带满足了另一个需求——它要盖在
+    对话流之上、且不该被滚动区裁剪，位置交给面板算。
+    """
+
+    locate = Signal(int)
+
+    MAX_ROWS = 24
+    ROW_PAD = 7
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        theme.named(self, "messageFlyout")
+        self.setVisible(False)
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(4, 4, 4, 4)
+        self._list = QListWidget()
+        theme.named(self._list, "popupList")
+        self._list.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        self._list.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self._list.itemClicked.connect(
+            lambda it: self._pick(it.data(Qt.UserRole)))
+        self._list.itemActivated.connect(
+            lambda it: self._pick(it.data(Qt.UserRole)))
+        lay.addWidget(self._list)
+
+    def _pick(self, index):
+        if not isinstance(index, int):
+            return
+        # 先收起再发信号：跳转过程中清单留在原地会挡住目标消息
+        self.setVisible(False)
+        self.locate.emit(index)
+
+    def build(self, items, current=-1):
+        """装填清单，返回建议尺寸。``items: [(序号, 预览文本)]``。"""
+        self._list.clear()
+        fm = self._list.fontMetrics()
+        widest = 200
+        for index, text in items[:self.MAX_ROWS]:
+            item = QListWidgetItem("%d. %s" % (index + 1, text))
+            item.setData(Qt.UserRole, index)
+            item.setToolTip(text)
+            item.setSizeHint(QSize(0, fm.height() + self.ROW_PAD * 2))
+            self._list.addItem(item)
+            widest = max(widest, fm.horizontalAdvance(text))
+        if len(items) > self.MAX_ROWS:
+            more = QListWidgetItem("… 还有 %d 条，用左侧刻度继续找"
+                                   % (len(items) - self.MAX_ROWS))
+            more.setFlags(Qt.NoItemFlags)
+            self._list.addItem(more)
+        self.set_current(current)
+        width = max(240, min(460, widest + 64))
+        rows = min(len(items), self.MAX_ROWS) + (
+            1 if len(items) > self.MAX_ROWS else 0)
+        height = min(430, rows * (fm.height() + self.ROW_PAD * 2) + 12)
+        return QSize(width, height)
+
+    def set_current(self, current):
+        """只移动选中行，不重建列表。
+
+        鼠标掠过刻度会连续换高亮；每次都 clear + addItem 的话，列表的
+        滚动位置会被重置回顶部，长会话里刚翻到底又被弹回去。
+        另外：必须先 addItem 再谈选中——还没进 model 的 item，
+        ``setSelected`` / ``setCurrentItem`` 都是空操作（v0.8.17 首版实拍
+        里"当前项"没亮就是这个原因）。
+        """
+        if not (0 <= current < self._list.count()):
+            self._list.clearSelection()
+            self._list.setCurrentItem(None)
+            return
+        item = self._list.item(current)
+        if item is None or not (item.flags() & Qt.ItemIsEnabled):
+            return
+        self._list.setCurrentItem(item)
+        item.setSelected(True)
+        self._list.scrollToItem(item, QListWidget.EnsureVisible)
+
+    def locate_tip(self, text):
+        self._list.setToolTip(text)
+
+
+# ===================================================================
 # 聊天面板
 # ===================================================================
 
@@ -2472,6 +2764,19 @@ class CopilotChatPanel(QWidget):
                     theme.harmonize(extra, t)
                 except RuntimeError:
                     pass
+        # 导航条的刻度是自绘的，主题变了要重画一遍
+        rail = getattr(self, "_rail", None)
+        if rail is not None:
+            try:
+                rail.update()
+            except RuntimeError:
+                pass
+        flyout = getattr(self, "_flyout", None)
+        if flyout is not None:
+            try:
+                theme.style_popup(flyout, t)
+            except RuntimeError:
+                pass
         return t
 
     def _apply_font_size_to_ui(self):
@@ -2670,6 +2975,32 @@ class CopilotChatPanel(QWidget):
         self._inner_lay.addStretch()
         self._scroll.setWidget(self._inner)
         layout.addWidget(self._scroll, 1)
+
+        # ── 消息导航条（v0.8.17）──
+        # 悬浮在对话流右缘：列出发过的每条消息，点一下跳过去。
+        # 做成面板的子控件而不是塞进布局——塞进去会永久吃掉 10px 行宽，
+        # 而且在窄侧栏里会把正文挤得更窄。定位交给 _place_rail()。
+        self._rail = MessageRail(self)
+        self._rail.locate.connect(self._locate_user_message)
+        self._rail.flyout_requested.connect(self._show_message_flyout)
+        self._rail.hovered.connect(self._on_rail_hovered)
+        self._rail.raise_()
+        self._flyout = MessageFlyout(self)
+        self._flyout.locate.connect(self._locate_user_message)
+        #: 浮层当前装的是第几条 / 一共几条——用来判断"要不要重建列表"
+        self._flyout_count = -1
+        self._flyout_highlight = -2
+        #: [{"bubble": ..., "text": ...}] —— 只装用户消息，供导航条与清单用
+        self._user_marks = []
+        self._rail_timer = QTimer(self)
+        self._rail_timer.setSingleShot(True)
+        self._rail_timer.setInterval(120)
+        self._rail_timer.timeout.connect(self._refresh_rail)
+        self._scroll.verticalScrollBar().valueChanged.connect(
+            lambda _v: self._rail_timer.start())
+        # 悬停整个对话流右缘也能唤出清单，不用精确命中那 10px
+        self._scroll.viewport().installEventFilter(self)
+        self._scroll.installEventFilter(self)
 
         # ── 底部 dock：状态 → 统一 composer → 用量条 ──
         dock = QWidget()
@@ -2874,6 +3205,7 @@ class CopilotChatPanel(QWidget):
         super().resizeEvent(event)
         self._sync_header()
         self._sync_editor_chip()
+        self._place_rail()
         # 面板变矮时，待决卡片要重新分空间；否则放大窗口后留下的差异区
         # 高度会把按钮重新顶出去。
         if getattr(self, "_pending_card", None) is not None:
@@ -3184,6 +3516,254 @@ class CopilotChatPanel(QWidget):
         if vsb:
             vsb.setValue(vsb.maximum())
 
+    # ── 消息导航（v0.8.17）─────────────────────────────────────────
+
+    def _place_rail(self):
+        """把导航条贴在**视口**右缘（竖滚动条左边）。
+
+        按 scroll.geometry() 贴的话会正好压在滚动条上：滚动条 9px、导航条
+        14px，两者叠在一起就是"拖不动滚动条、也点不准刻度"。用视口坐标
+        算，刻度落在内容右侧的留白里，两者互不打扰。
+        """
+        rail = getattr(self, "_rail", None)
+        scroll = getattr(self, "_scroll", None)
+        if rail is None or scroll is None:
+            return
+        if not self._config.get("message_nav_enabled", True):
+            rail.setVisible(False)
+            return
+        try:
+            vp = scroll.viewport()
+            tl = vp.mapTo(scroll, QPoint(0, 0))
+            w = vp.width()
+            h = vp.height()
+            base = scroll.mapTo(self, QPoint(0, 0))
+        except RuntimeError:
+            return
+        top = base.y() + tl.y()
+        right = base.x() + tl.x() + w
+        rail.setGeometry(right - MessageRail.WIDTH - 2,
+                         top + 10, MessageRail.WIDTH, max(80, h - 20))
+        rail.raise_()
+
+    def _refresh_rail(self):
+        """重建刻度：位置取消息气泡在内容里的相对位置。
+
+        真实位置只用来决定"当前高亮第几条"；刻度本身等距摆放，这样
+        20 条消息就是 20 个可点目标，不会在长会话里叠成一坨。
+        """
+        rail = getattr(self, "_rail", None)
+        if rail is None:
+            return
+        # 整个刷新包一层：这个函数跑在 QTimer 槽里，未捕获异常会让 Qt
+        # 直接 abort（exit 127、连 traceback 都没有），导航条出问题不该
+        # 把整个聊天面板带走。
+        try:
+            self._refresh_rail_inner(rail)
+        except Exception:  # noqa: BLE001
+            logger.debug("消息导航条刷新失败", exc_info=True)
+            try:
+                rail.set_ticks([], -1)
+            except RuntimeError:
+                pass
+
+    def _refresh_rail_inner(self, rail):
+        marks = [m for m in self._user_marks if self._alive(m.get("bubble"))]
+        self._user_marks = marks
+        # 设置里关掉导航条时彻底不显示；开启时至少有一条消息才露面
+        # （空会话里挂一根"没有刻度"的竖线只会让人以为界面坏了）。
+        if not marks or not self._config.get("message_nav_enabled", True):
+            rail.set_ticks([], -1)
+            return
+        viewport = self._scroll.viewport()
+        total = float(max(1, self._inner.height()))
+        ticks = []
+        for i, mark in enumerate(marks):
+            bubble = mark["bubble"]
+            try:
+                top = bubble.mapTo(self._inner, QPoint(0, 0)).y()
+            except RuntimeError:
+                top = 0
+            ticks.append((max(0.0, min(1.0, top / total)),
+                          "%d. %s" % (i + 1, mark.get("text") or "（空消息）")))
+        # 当前项 = 视口里最靠上的那条用户消息（它的底边还没滚出视口顶）
+        current = len(marks) - 1
+        for i, mark in enumerate(marks):
+            try:
+                bottom = mark["bubble"].mapTo(
+                    viewport, QPoint(0, mark["bubble"].height())).y()
+            except RuntimeError:
+                continue
+            if bottom >= 0:
+                current = i
+                break
+        rail.set_ticks(ticks, current)
+        self._place_rail()
+
+    def _locate_user_message(self, index):
+        """滚到第 index 条用户消息，并让它闪一下边框，视线好跟上。"""
+        marks = [m for m in self._user_marks if self._alive(m.get("bubble"))]
+        if not (0 <= index < len(marks)):
+            return
+        bubble = marks[index]["bubble"]
+        try:
+            vsb = self._scroll.verticalScrollBar()
+            y = bubble.mapTo(self._inner, QPoint(0, 0)).y()
+            # 目标位置让气泡落在视口上方 1/4 处，而不是贴顶——贴顶会让
+            # 用户分不清"这是第一条"还是"已经滚到顶了"
+            want = max(0, y - self._scroll.viewport().height() // 4)
+            vsb.setValue(min(want, vsb.maximum()))
+            if hasattr(bubble, "flash"):
+                bubble.flash()
+        except RuntimeError:
+            return
+
+    def _show_message_flyout(self, highlight=None):
+        """在导航条左侧弹出完整清单（面板内浮层）。
+
+        ``highlight`` 给定时预选中那一行——鼠标掠过刻度时，清单里对应
+        的那条正好亮着，指哪儿看哪儿。
+        """
+        marks = [m for m in self._user_marks if self._alive(m.get("bubble"))]
+        if not marks:
+            return
+        target = highlight if (highlight is not None
+                               and 0 <= highlight < len(marks)) else -1
+        # 鼠标掠过刻度时这个函数会被高频调用：条数没变就只挪高亮，
+        # 不重建列表（重建会把列表的滚动位置重置回顶部）。
+        if self._flyout.isVisible() and self._flyout_count == len(marks):
+            self._flyout.set_current(target)
+            self._flyout_highlight = target
+            return
+        self._flyout_count = len(marks)
+        self._flyout_highlight = target
+        if target >= 0:
+            current = highlight
+        else:
+            current = -1
+            try:
+                viewport = self._scroll.viewport()
+                for i, mark in enumerate(marks):
+                    if mark["bubble"].mapTo(
+                            viewport,
+                            QPoint(0, mark["bubble"].height())).y() >= 0:
+                        current = i
+                        break
+            except RuntimeError:
+                current = -1
+        items = [(i, mark.get("text") or "（空消息）")
+                 for i, mark in enumerate(marks)]
+        size = self._flyout.build(items, current)
+        # 贴着导航条左缘、与它顶端对齐；面板放不下时往下收
+        try:
+            rg = self._rail.geometry()
+            vg = self._scroll.geometry()
+        except RuntimeError:
+            return
+        x = rg.left() - size.width() - 6
+        y = max(vg.top() + 4, rg.top() - 4)
+        h = min(size.height(), max(120, vg.height() - 10))
+        self._flyout.setGeometry(max(4, x), y, size.width(), h)
+        self._flyout.setVisible(True)
+        self._flyout.raise_()
+
+    def _on_rail_hovered(self, index):
+        """鼠标掠过刻度时就展开清单，并把对应行选中。
+
+        比"必须精准悬停 10px 竖条才弹"好得多：刻度本身就是导航条主体的
+        视觉锚点，用户往那儿一动鼠标，意图已经很明确了。移出则收起。
+        """
+        if index < 0:
+            if not self._over_flyout(QCursor.pos()):
+                self._hide_message_flyout()
+            return
+        self._show_message_flyout(highlight=index)
+
+    def _hide_message_flyout(self):
+        flyout = getattr(self, "_flyout", None)
+        if flyout is not None and flyout.isVisible():
+            flyout.setVisible(False)
+        # 收起后下次必须重建，否则"同样 5 条、同样高亮"会被当成无需刷新
+        self._flyout_count = -1
+        self._flyout_highlight = -2
+
+    @staticmethod
+    def _alive(widget):
+        """控件还没被 deleteLater 收走吗。
+
+        Qt 删除是排队的，``_clear_ui()`` 之后指针仍在但 C++ 对象已失效，
+        直接摸它抛 RuntimeError。这里做一次廉价探活，把导航条从这类
+        半死状态里摘出来。
+        """
+        if widget is None:
+            return False
+        try:
+            widget.isVisible()
+        except RuntimeError:
+            return False
+        return True
+
+    def _over_flyout(self, global_pos):
+        flyout = getattr(self, "_flyout", None)
+        if flyout is None or not flyout.isVisible():
+            return False
+        try:
+            return flyout.rect().contains(flyout.mapFromGlobal(global_pos))
+        except RuntimeError:
+            return False
+
+    def _maybe_hide_flyout(self, global_pos):
+        """鼠标离开「右缘 + 清单」这一整块时才收起。
+
+        清单和触发区是两块区域：只按视口坐标判断的话，鼠标往清单上一移
+        就被当成"离开"了，清单会在指针底下闪掉。
+        """
+        if not self._flyout.isVisible():
+            return
+        if self._over_flyout(global_pos):
+            return
+        x = self._scroll.viewport().mapFromGlobal(global_pos).x()
+        if x < self._scroll.viewport().width() - 70:
+            self._hide_message_flyout()
+
+    def eventFilter(self, obj, event):  # noqa: N802 - Qt 接口
+        """对话流右缘也能唤出清单，但主要入口是导航条本身。
+
+        导航条会盖住视口右侧 14px，鼠标在那儿时事件由导航条接管；
+        这里只兜底"贴着右缘但没命中刻度"的移动，并且要求面板够宽——
+        窄侧栏里正文本身就贴着右缘，随便动一下鼠标就弹清单会很吵。
+        """
+        try:
+            if obj is getattr(self, "_scroll", None):
+                # 审批条出现 / 用量条换行都会改滚动区几何，而面板尺寸没变，
+                # 不会走 resizeEvent——导航条就得靠这条跟上。
+                if event.type() == QEvent.Resize:
+                    self._place_rail()
+                return super().eventFilter(obj, event)
+            if obj is getattr(self, "_scroll", None).viewport():
+                etype = event.type()
+                if etype == QEvent.Enter:
+                    self._rail_timer.start()
+                elif etype == QEvent.MouseMove:
+                    gp = event.globalPos()
+                    if self._over_flyout(gp):
+                        return super().eventFilter(obj, event)
+                    x = event.pos().x()
+                    if (self.width() >= 420
+                            and x >= self._scroll.viewport().width() - 40
+                            and len(self._user_marks) >= 2):
+                        if not self._flyout.isVisible():
+                            self._show_message_flyout()
+                    else:
+                        self._maybe_hide_flyout(gp)
+                elif etype in (QEvent.Leave, QEvent.Wheel):
+                    self._rail_timer.start()
+                    if etype == QEvent.Leave:
+                        self._hide_message_flyout()
+        except (RuntimeError, AttributeError):
+            pass
+        return super().eventFilter(obj, event)
+
     def _set_status(self, text):
         """设置 AI 状态提示（输入框上方）"""
         if text:
@@ -3314,6 +3894,14 @@ class CopilotChatPanel(QWidget):
         welcome = getattr(self, "_welcome", None)
         if role == "user" and welcome is not None:
             welcome.setVisible(False)
+        # v0.8.17：用户消息要进右侧导航索引。存的是预览文本而不是原文，
+        # 免得长文把提示气泡撑爆；位置每次刷新时现算。
+        if role == "user":
+            marks = getattr(self, "_user_marks", None)
+            if marks is not None:
+                marks.append({"bubble": b,
+                              "text": nav_preview(content)})
+                QTimer.singleShot(0, self._refresh_rail)
         self._scroll_to_bottom()
         return b
 
@@ -3397,6 +3985,15 @@ class CopilotChatPanel(QWidget):
                 i.widget().deleteLater()
         self._welcome = None
         self._current_bubble = None
+        # 导航索引里的气泡这时已经被 takeAt 摘走，留着指针只会在下一次
+        # _refresh_rail 里摸到半死的 C++ 对象。
+        self._user_marks = []
+        rail = getattr(self, "_rail", None)
+        if rail is not None:
+            rail.set_ticks([], -1)
+        flyout = getattr(self, "_flyout", None)
+        if flyout is not None and flyout.isVisible():
+            flyout.hide()
         # 审批卡也在这批被删掉的控件里：快捷条不能再指着一张不存在的卡，
         # 否则点一下就是 RuntimeError（v0.8.5）。
         self._set_awaiting_approval(False)
@@ -3859,6 +4456,14 @@ class CopilotChatPanel(QWidget):
         if self._config.get("repo_index_enabled", True):
             QTimer.singleShot(200, self._warm_repo_index)
         self._refresh_usage_ui()
+        # v0.8.17：设置里关掉导航条要立刻收起来，不用等下次发消息
+        rail = getattr(self, "_rail", None)
+        if rail is not None:
+            if not self._config.get("message_nav_enabled", True):
+                rail.setVisible(False)
+                self._hide_message_flyout()
+            else:
+                self._refresh_rail()
 
     # ── v0.5.6 P1：审计查看器 / 仓库索引 ──────────────────────────────
 

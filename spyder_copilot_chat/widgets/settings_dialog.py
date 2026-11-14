@@ -885,6 +885,8 @@ def get_provider_config():
         "inline_diff_enabled": cfg.get("inline_diff_enabled", True),
         # v0.8.1：写作完成后在聊天流里也铺一遍红绿行
         "chat_diff_mode": cfg.get("chat_diff_mode", "smart"),
+        # v0.8.17：对话流右侧的消息导航条（列出你发过的每条消息）
+        "message_nav_enabled": cfg.get("message_nav_enabled", True),
         # v0.8.0：预算式自主循环
         "max_tool_rounds": cfg.get("max_tool_rounds", 200),
         "soft_tool_rounds": cfg.get("soft_tool_rounds", 40),
@@ -1162,6 +1164,15 @@ class SettingsDialog(QDialog):
             "编辑器内联（Cursor 式）看当前文件，对话内卡片（Cline 式）\n"
             "留一份可回看的记录——文件没在编辑器里打开时也能看到。")
         form.addRow("对话内 diff：", self._chat_diff_mode)
+
+        # v0.8.17：对话流右侧的消息导航条
+        self._message_nav_enabled = QCheckBox(
+            "在对话流右侧显示消息导航条，悬停展开你发过的每条消息")
+        self._message_nav_enabled.setChecked(True)
+        self._message_nav_enabled.setToolTip(
+            "刻度对应用户消息，点一下跳到那一条；鼠标移到对话流右缘会弹出"
+            "完整清单。长会话里想回头找某句话时用得上。")
+        form.addRow("消息导航条：", self._message_nav_enabled)
         layout.addWidget(cline)
 
         # ── v0.8.0 Autonomy Edition：预算式自主循环 ──
@@ -1773,6 +1784,8 @@ class SettingsDialog(QDialog):
             self._config.get("checkpoints_enabled", True))
         self._inline_diff_enabled.setChecked(
             bool(self._config.get("inline_diff_enabled", True)))
+        self._message_nav_enabled.setChecked(
+            bool(self._config.get("message_nav_enabled", True)))
         diff_idx = self._chat_diff_mode.findData(
             self._config.get("chat_diff_mode", "smart"))
         if diff_idx >= 0:
@@ -1862,6 +1875,8 @@ class SettingsDialog(QDialog):
         self._config["inline_diff_enabled"] = (
             self._inline_diff_enabled.isChecked())
         self._config["chat_diff_mode"] = self._chat_diff_mode.currentData()
+        self._config["message_nav_enabled"] = (
+            self._message_nav_enabled.isChecked())
         # v0.8.0：自主循环预算
         self._config["max_tool_rounds"] = self._max_tool_rounds.value()
         self._config["soft_tool_rounds"] = self._soft_tool_rounds.value()

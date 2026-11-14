@@ -57,6 +57,7 @@ NO_RETRY = frozenset({BALANCE, AUTH, MODEL, CONTEXT, REFUSED, TOO_LARGE,
 
 PROVIDER_LABELS = {
     "deepseek": "DeepSeek",
+    "hunyuan": "腾讯混元 TokenHub",
     "copilot": "GitHub Copilot",
     "openai": "OpenAI",
     "azure": "Azure OpenAI",
@@ -84,6 +85,8 @@ _TITLES = {
 # provider → (按钮文案, 链接)。只在卡片里显示成一行可点的文字。
 _TOPUP = {
     "deepseek": ("充值页", "https://platform.deepseek.com/top_up"),
+    "hunyuan": ("TokenHub 控制台",
+                "https://console.cloud.tencent.com/tokenhub"),
     "openai": ("计费页",
                "https://platform.openai.com/settings/organization/billing/overview"),
     "anthropic": ("计费页", "https://console.anthropic.com/settings/billing"),
@@ -91,6 +94,8 @@ _TOPUP = {
 }
 _KEYS = {
     "deepseek": ("API Keys 页", "https://platform.deepseek.com/api_keys"),
+    "hunyuan": ("TokenHub API Key",
+                "https://console.cloud.tencent.com/tokenhub/apikey"),
     "openai": ("API Keys 页", "https://platform.openai.com/api-keys"),
     "anthropic": ("API Keys 页", "https://console.anthropic.com/settings/keys"),
 }
@@ -277,7 +282,10 @@ _MARKERS = (
     # (关键字元组, 分类) —— 顺序有意义：越「具体」的越靠前
     (("insufficient balance", "insufficient_balance", "insufficient quota",
       "insufficient_quota", "quota exceeded", "exceeded your current quota",
-      "billing", "payment required", "余额不足", "欠费", "额度已用尽"),
+      "billing", "payment required", "余额不足", "欠费", "额度已用尽",
+      # TokenHub 的 402 还可能是「模型服务没开通」，不是欠费
+      "model service is not activated", "service not activated",
+      "not activated", "未开通", "402002", "402003"),
      BALANCE),
     (("invalid api key", "incorrect api key", "invalid_api_key",
       "unauthorized", "authentication", "api key not valid", "token expired",
@@ -394,23 +402,29 @@ def classify(exc=None, *, text="", status=0, body="", provider="", model=""):
 
 def _build(kind, status, provider, model, detail, code):
     title = _TITLES.get(kind, _TITLES[UNKNOWN])
+    # TokenHub 的 402 还可能是「模型服务没开通」，不能只说余额
+    if kind == BALANCE and provider == "hunyuan":
+        title = "账户余额不足 / 模型服务未开通"
     if status:
         title = f"{title}（HTTP {status}）"
     label = PROVIDER_LABELS.get(provider, provider or "服务端")
     return ApiErrorInfo(
         kind=kind, status=status, provider=provider or "", model=model or "",
         title=title, summary=_summary(kind, label, model, status,
-                                      named=bool(provider)),
+                                      named=bool(provider), provider=provider),
         detail=detail, code=code,
         steps=tuple(_steps(kind, provider, label, model)),
         links=tuple(_links(kind, provider)),
     )
 
 
-def _summary(kind, label, model, status, named=True):
+def _summary(kind, label, model, status, named=True, provider=""):
     if kind == BALANCE:
-        if label == "GitHub Copilot":
+        if provider == "copilot":
             return "Copilot 的订阅额度已用完，服务端拒绝了这次请求"
+        if provider == "hunyuan":
+            return (f"{label} 账户余额 / 额度不足，或这个模型服务还没在"
+                    "控制台开通，服务端直接拒绝了")
         return f"{label} 账户余额不足以支付这次请求，服务端直接拒绝了"
     if kind == AUTH:
         if label == "GitHub Copilot":
@@ -468,6 +482,17 @@ def _steps(kind, provider, label, model):
                 "充值到账后不用重开对话：点这条消息右上角的「重试」，上下文还在",
                 "暂时不充：设置 → 模型里换成本地 Ollama（免费），或换一家有余额的 API",
             )
+        if provider == "hunyuan":
+            return (
+                "TokenHub 的 402 有两种：账户余额 / 额度不足，或者这个模型服务"
+                "还没在控制台开通。先到 "
+                + _md_link("TokenHub 控制台",
+                           "https://console.cloud.tencent.com/tokenhub")
+                + " 确认 hy4 已开通，再查余额",
+                "开通、充值到账后点这条消息右上角的「重试」，不用重开对话",
+                "仍然 402：确认 API Key 与接入地址属于同一地域——广州 / 新加坡 / "
+                "硅谷的 Key 不通用，填错会直接被拒",
+            )
         topup = _TOPUP.get(provider)
         return (
             f"到 {label} 控制台确认余额 / 额度"
@@ -487,17 +512,25 @@ def _steps(kind, provider, label, model):
                  f"前缀是否完整）")
         second = (f"Key 在 {_md_link('API Keys 页', link[1])} 生成；改完点「测试连接」确认能通"
                   if link else "到服务商控制台核对 Key 是否被删除 / 轮换")
-        return (first, second, "公司网络若做了 TLS 拦截，也会表现成 401，先换手机热点对比")
+        third = ("公司网络若做了 TLS 拦截，也会表现成 401，先换手机热点对比")
+        if provider == "hunyuan":
+            third = ("TokenHub 的 401 最常见是**地域不匹配**：广州 / 新加坡 / 硅谷 "
+                     "各自签发 Key，换了 API 地址就要换对应地域的 Key")
+        return (first, second, third)
     if kind == RATE_LIMIT:
         return (
             "等 5–10 秒再发；连续触发时降低工具调用轮次或换模型",
             "开启思考模式 + 长上下文时单次占用更高，更容易撞上限流",
         )
     if kind == MODEL:
+        known = {
+            "deepseek": "DeepSeek 当前可用：deepseek-flash、deepseek-v4-pro",
+            "hunyuan": "TokenHub 当前可用：hy4、hy4-preview；"
+                       "先用 GET /v1/models 看这个地域真正上线的模型",
+        }
         return (
             f"设置 → 模型里填 {label} 确实提供的模型名（大小写、版本号都要一致）",
-            "DeepSeek 官方可用：deepseek-chat、deepseek-reasoner；"
-            "别把别家的模型名填到 DeepSeek 上",
+            known.get(provider, "别把别家的模型名填到另一家服务商上"),
             "改成自定义 / 代理地址时，确认它转发的模型列表里有这个模型",
         )
     if kind == CONTEXT:
@@ -527,8 +560,10 @@ def _steps(kind, provider, label, model):
             "持续 5xx 时换模型或换提供方，别反复重试同一个节点",
         )
     if kind == NETWORK:
+        domain = ("https://tokenhub.tencentcloudmaas.com"
+                  if provider == "hunyuan" else "https://api.deepseek.com")
         return (
-            "确认能打开服务商域名（如 https://api.deepseek.com），再检查系统代理",
+            f"确认能打开服务商域名（如 {domain}），再检查系统代理",
             "Spyder 默认走系统代理；公司网络的 TLS 拦截会表现为连接被重置",
             "本地 Ollama：确认 ollama serve 在跑、端口 11434 通",
         )

@@ -1511,9 +1511,17 @@ class ChatWorker(QThread):
         url = f"{self.cfg['api_url']}{self.cfg.get('chat_endpoint', '/chat/completions')}"
         msgs = self._prepare_messages()
         agent = self.cfg.get("agent_mode", True) and self.cfg.get("supports_agent", False)
-        is_deepseek = self.cfg.get("provider") == "deepseek"
+        provider = self.cfg.get("provider", "")
+        # v0.8.14：能力字段由 settings_dialog.PROVIDERS 随配置带进来，
+        # 这里只按能力发请求，不再按 provider 名硬编码。旧的 cfg（测试、
+        # 历史任务快照）没带字段时，按名字兜底。
+        thinking_capable = bool(self.cfg.get("supports_thinking", False)) or \
+            provider in ("deepseek", "hunyuan")
         thinking = str(self.cfg.get("thinking_mode", "disabled")).lower() == "enabled"
-        max_tokens = self.cfg.get("max_tokens", 8192)
+        effort = str(self.cfg.get("reasoning_effort", "high")).lower()
+        allowed = tuple(self.cfg.get("reasoning_efforts") or ())
+        max_tokens = int(self.cfg.get("max_tokens", 8192) or 8192)
+        max_output = int(self.cfg.get("max_output_tokens", 0) or 0)
         body = {
             "model": self.cfg.get("model", "deepseek-flash"),
             "messages": msgs,
@@ -1521,22 +1529,39 @@ class ChatWorker(QThread):
             "max_tokens": max_tokens,
             "stream": True,
         }
-        # DeepSeek 官方文档：思考模式默认开启，必须用 thinking 字段显式控制。
-        # 关闭时 temperature 才生效，且工具调用无需回传 reasoning_content
-        # （开启时若历史缺少 reasoning_content，API 会返回 400）。
-        # 开启时思维链默认约 64K token，故把输出预算抬到官方默认值 64K，
-        # 避免最终回答被 max_tokens 截断。
-        if is_deepseek:
-            if thinking:
+        # DeepSeek / 腾讯混元 Hy4 的深度思考默认开启，必须用 thinking
+        # 显式控制。关闭时 temperature 才生效，工具调用也无需回传
+        # reasoning_content（开启却缺回传时 API 会返回 400）。
+        if thinking_capable:
+            # Hy4 的 reasoning_effort 只认 high / no_think，preview 认
+            # none / high；把别家的 low / max 填进去会直接 400。
+            # no_think / none 本身就是「别思考」，等价于关掉 thinking，
+            # 不跟 thinking=enabled 一起发。
+            want_off = effort in ("no_think", "none")
+            if thinking and not want_off:
                 body["thinking"] = {"type": "enabled"}
-                effort = str(self.cfg.get("reasoning_effort", "high")).lower()
-                if effort not in ("low", "high", "max"):
+                if allowed:
+                    if effort not in allowed or want_off:
+                        effort = "high"
+                elif effort not in ("low", "high", "max"):
+                    # 旧 cfg 没带白名单：沿用 DeepSeek 的合法档位
                     effort = "high"
                 body["reasoning_effort"] = effort
-                body["max_tokens"] = max(int(max_tokens), 65536)
+                # 思考链本身要吃掉大量输出预算，抬到官方默认 64K
+                body["max_tokens"] = max(max_tokens, 65536)
             else:
                 body["thinking"] = {"type": "disabled"}
-        if agent and self.cfg["provider"] not in ("ollama",):
+            if max_output:
+                # Hy4 单次输出上限 64K；UI 里最大 Token 可填到 393216，
+                # 不截断会收到 400
+                body["max_tokens"] = min(int(body["max_tokens"]), max_output)
+        if self.cfg.get("stream_usage"):
+            # TokenHub 必须显式要，否则流末尾不带 usage（成本统计一直是 0）
+            body["stream_options"] = {"include_usage": True}
+        if agent and provider not in ("ollama",):
+            # Hy4 带 tools 时服务端默认开启 Preserved Thinking，要求把
+            # 上一轮 assistant 的 reasoning_content 原样回填；面板在
+            # _on_done / _on_tool_calls 里已经这么做了。
             body["tools"] = self._tools
 
         headers = {
@@ -1561,14 +1586,34 @@ class ChatWorker(QThread):
                     break
                 try:
                     d = json.loads(p)
+                except Exception:
+                    continue
+                # v0.8.14：TokenHub 的流式错误放在 SSE error frame 里
+                # （HTTP 已经 200），旧代码一句 except: continue 会把它
+                # 整个吞掉，界面只看到「回答空了」。业务码是六位数字，
+                # 前三位对应 HTTP 状态（402xxx / 401xxx / 429xxx）。
+                if isinstance(d, dict) and d.get("error"):
+                    err = d["error"] if isinstance(d["error"], dict) else \
+                        {"message": str(d["error"])}
+                    biz = str(err.get("code") or "")
+                    err_status = (int(biz[:3]) if len(biz) == 6
+                                  and biz[:3].isdigit() else 0)
+                    raise ApiError(
+                        err_status,
+                        json.dumps(err, ensure_ascii=False)[:4000],
+                        provider=provider,
+                        model=self.cfg.get("model", "")) from None
+                try:
                     choices = d.get("choices", [{}])
                     delta = choices[0].get("delta", {}) if choices else {}
-                    # DeepSeek / OpenAI 兼容流末尾可能带 usage（无需 stream_options）
+                    # OpenAI 兼容流末尾可能带 usage；TokenHub 要显式
+                    # stream_options.include_usage 才给
                     if d.get("usage"):
                         self._emit_usage(d["usage"])
 
-                    # 捕获 DeepSeek thinking 模式的推理内容
-                    rc = delta.get("reasoning_content")
+                    # DeepSeek / Hy4 的推理链：官方字段 reasoning_content，
+                    # 个别网关写成 reasoning，两个都认。
+                    rc = delta.get("reasoning_content") or delta.get("reasoning")
                     if rc:
                         self._reasoning_content += rc
 
@@ -1586,7 +1631,8 @@ class ChatWorker(QThread):
                             self._flush_tool_calls()
                         full += c
                         self._emit_chunk(c)
-                except: continue
+                except Exception:
+                    continue
 
             self._flush_chunks()
             # 如果本流中已发出 tool_calls，由 _on_tool_calls 接管后续，不再触发 done

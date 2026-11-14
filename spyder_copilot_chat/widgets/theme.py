@@ -1347,6 +1347,28 @@ QPlainTextEdit#composerInput {{
 }}
 QWidget#composerControls {{ background: transparent; }}
 QWidget#composerMeter {{ background: transparent; }}
+/* 没带 objectName 的下拉框（设置页里那一批）以前没有配色规则，
+   暗色主题下会变成「深色字 + 深色底」几乎看不见；ID 选择器优先级
+   更高，下面 #modelPicker / #agentPicker 的紧凑样式不受影响。 */
+QComboBox {{
+    background: {t['surface']};
+    color: {t['text']};
+    border: 1px solid {t['border']};
+    border-radius: {max(5, radius - 3)}px;
+    padding: 4px 8px;
+    font-family: {t.font_family};
+    font-size: {sm}px;
+    selection-background-color: {t['selection']};
+}}
+QComboBox QLineEdit {{
+    border: none;
+    background: transparent;
+    color: {t['text']};
+    padding: 0 2px;
+    margin: 0;
+    font-size: {sm}px;
+    selection-background-color: {t['selection']};
+}}
 QComboBox#modelPicker, QComboBox#agentPicker {{
     background: {t['surface_alt']};
     color: {t['text_muted']};

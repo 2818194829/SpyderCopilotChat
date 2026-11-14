@@ -2,6 +2,28 @@
 
 只记录对使用者有影响的变更。最新的在最上面。
 
+## v0.8.14：Hy4 Edition（腾讯混元 Hy4 成为一等 Provider）
+
+需求是「参考 [Hy AI Studio 文档中心](https://aistudio.tencent.com/hunyuan/doc-center)，新增支持腾讯的 Hy4 模型」。那个页面是 SPA，抓到的只有标题和目录，正文由 JS 动态加载；实际接口契约改从腾讯云 TokenHub 官方文档核对：API 用法 `/document/product/1300/78941`（地域域名、Bearer、`/v1/models`）、模型清单 `78934`（`hy4` / `hy4-preview`、1M 上下文、960k 输入 / 64k 输出、看图、Function Calling）、深度思考 `80637`（`thinking`、`reasoning_effort` 只接受 `high` / `no_think`）、思维保留 `81572`（带 `tools` 时默认开启 Preserved Thinking）。
+
+| 改动 | 说明 |
+|---|---|
+| 一等 Provider | 设置页新增「腾讯混元 Hy4（TokenHub）」：默认广州地址、`hy4` / `hy4-preview`、Key 控制台与产品文档入口、地域备选地址 tooltip；`SELECTABLE_PROVIDER_ORDER` 里可直接选，不用再借「OpenAI 兼容」手填 |
+| 请求体 | `Authorization: Bearer <Key>` + `/v1/chat/completions`；`thinking: {"type": "enabled" / "disabled"}` 显式控制；`stream_options.include_usage` 让流末尾给用量；`max_tokens` 截到 64K 输出上限；上下文窗口 / 单价默认值跟着 Provider 走（¥6 / ¥18 每百万 tokens） |
+| 思考强度 | 白名单按 Provider 分家：Hy4 只有 `high` / `no_think`，DeepSeek 仍是 `low` / `high` / `max`。从别家切过来残留的 `low` 会回落 `high`；`no_think` 等价于关思考，不会再发一个官方不认的值导致 400 |
+| 思维保留 | Agent 带 `tools` 时把上一轮 `reasoning_content` 原样回填到对应 assistant message。TokenHub 文档明确说漏回填会掉性能与缓存命中率，这条不能靠「模型自己记」 |
+| 流式错误帧 | TokenHub 的错误可能作为 SSE `{"error": ...}` 帧出现在 **HTTP 200** 里。旧解析把它当空 chunk 吞掉，界面表现为「回答莫名中断」。现在识别成错误，六位业务码前三位映射回 HTTP 状态，重新抛结构化 `ApiError` 走错误卡片 |
+| 错误文案 | `api_errors.py` 认得 `hunyuan`：402 说清「余额不足 / 模型服务未开通」并指向 TokenHub 控制台，401 说清广州 / 新加坡 / 硅谷 Key 不通用，MODEL 给 `hy4` / `hy4-preview`，NETWORK 给 `tokenhub.tencentcloudmaas.com`；不会串成 DeepSeek 充值或 Copilot 订阅 |
+| FIM | 复用 Hy4 做内联补全时自动关思考、截 64K；402 文案按 TokenHub 给；OpenAI / Copilot / DeepSeek 原有行为不变 |
+| 多模态 | 图片附件按 OpenAI 兼容 `image_url` 发送，不把 Hy4 误判成「不支持看图」的模型 |
+| 设置页 UI | 实拍时顺手修了三处：通用 `QComboBox` 在暗色主题下没配色（文字几乎看不见）、可编辑模型框的 `hy4` 下半截被切（内嵌 `QLineEdit` 继承 padding 且高度只有 22px）、非 Copilot 时残留的空「认证:」行。另修 `_load_from_config()` 把 Provider 默认 API 地址抹成空 |
+
+**验证**：新增 `tests/test_v094.py` **124 项**——本地 `HTTPServer` mock TokenHub，覆盖注册表 / 设置页 / 默认请求体与 Bearer / 路径 / `include_usage` / 64K 截断 / thinking 开关与 `low` 回落 / `no_think` / Agent `tools` 与 `reasoning_content` 回填 / 多模态 / SSE 文本·推理·工具调用·usage·错误帧 / 402·401·MODEL·NETWORK 卡片 / FIM / 旧 DeepSeek 配置兼容。全库 18 个历史回归脚本（v077–v094）全部通过，其中 v0.8.14 新增 124 项。实拍两张：`docs/images/hy4-provider-settings-dark.png`、`hy4-error-402-dark.png`。
+
+**边界**：本机没有真实 TokenHub Key，线上只探测了无需 Key 的 `/v1/models` 可达性（返回 401 属预期），**没有发过真实 chat 请求**；端到端全部由 mock 服务验证。`hy4-preview` 官方另支持 `reasoning_effort: none`，设置页目前按正式版 `hy4` 统一给 `high / no_think`。
+
+README 新增「腾讯混元 Hy4（TokenHub）」章节：Key 创建、四个地域地址、模型、思考模式、图片 / Agent 能力、402 / 401 处置与两张截图。
+
 ## v0.8.13：Honest Edition（API 出错时说人话）
 
 用户贴来的报错：

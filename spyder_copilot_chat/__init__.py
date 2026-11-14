@@ -433,8 +433,29 @@ v0.8.13 (honest)：API 出错时说人话 —— 402 不再让人去升级 Copil
   - 402/401/4xx 明确不自动重试（重试一百次也还是不够钱）
   - FIM 补全的 402 提示也按提供方改写，冷却 5 分钟不变
 
+v0.8.14 (hy4)：腾讯混元 Hy4 / TokenHub 成为一等 Provider
+  - 设置页新增「腾讯混元 Hy4（TokenHub）」：默认广州地址、hy4 /
+    hy4-preview 两个模型、Key 控制台与产品文档入口、地域备选地址
+  - 请求链路按官方契约发：Bearer 鉴权 + /v1/chat/completions、
+    thinking: {"type": "enabled" | "disabled"}、合法 reasoning_effort、
+    stream_options.include_usage、max_tokens 截到 64K 输出上限
+  - 思考强度白名单按 Provider 走：Hy4 只有 high / no_think，DeepSeek 仍是
+    low / high / max；从别家切过来残留的 low 会回落 high，不会发成 400
+  - 带 tools 的 Agent 对话保留 Preserved Thinking：把上一轮的
+    reasoning_content 原样回填进 assistant 消息，避免缓存命中率掉下去
+  - 流式响应里的 {"error": ...} 帧不再被当成空 chunk 吞掉，六位业务码
+    前三位映射回 HTTP 状态，重新走结构化 ApiError 与错误卡片
+  - 错误文案单独处理 TokenHub：402 说清「余额不足 / 模型服务未开通」，
+    401 说清广州 / 新加坡 / 硅谷 Key 不能跨地域用，MODEL / NETWORK
+    提示的地址与模型名也跟着 Provider 走
+  - FIM 复用 Hy4 时自动关思考、截 64K；不影响 OpenAI / DeepSeek 原有行为
+  - 设置页顺手修了三处实拍发现的 UI 硬伤：通用 QComboBox 暗色配色、
+    可编辑模型框文字被切、非 Copilot 时残留的空「认证:」行
+  - 新增 test_v094.py 124 项（本地 mock TokenHub，覆盖注册表 / 设置页 /
+    请求体 / SSE / 错误卡片 / FIM / 多模态 / 旧配置兼容）
+
 """
 
-__version__ = "0.8.13"
-__edition__ = "wired"
+__version__ = "0.8.14"
+__edition__ = "hy4"
 

@@ -346,6 +346,9 @@ def _fetch_ollama_fim(cfg, prefix, suffix, language):
 _OPENAI_DEFAULT_URLS = {
     "openai": "https://api.openai.com",
     "deepseek": "https://api.deepseek.com",
+    # v0.8.14：聊天面板切到腾讯混元 Hy4 时，FIM 的 auto 后端会走
+    # OpenAI 兼容链路；没有这条映射会误打 api.openai.com，白等一次超时。
+    "hunyuan": "https://tokenhub.tencentcloudmaas.com/v1",
 }
 
 
@@ -375,10 +378,13 @@ def _fetch_openai_fim(cfg, prefix, suffix, language):
         "temperature": cfg["temperature"],
         "stream": False,
     }
-    # DeepSeek 官方文档：FIM 补全仅非思考模式支持，且思考模式默认开启，
-    # 不显式关闭会让补全内容被 reasoning_content 吃掉。
-    if gc_provider == "deepseek":
+    # DeepSeek / 腾讯混元 Hy4 的深度思考默认开启，补全只要中间那几行
+    # 代码；不显式关闭会让补全内容被 reasoning_content 吃掉。
+    if gc_provider in ("deepseek", "hunyuan"):
         body["thinking"] = {"type": "disabled"}
+    # Hy4 单次输出上限 64K，补全用不了那么多，但别超过它
+    if gc_provider == "hunyuan":
+        body["max_tokens"] = min(int(cfg["max_tokens"]), 65536)
     headers = {
         "Content-Type": "application/json",
         "Authorization": "Bearer {0}".format(api_key),
@@ -591,6 +597,8 @@ _STATUS_MESSAGES = {
 _QUOTA_MESSAGES = {
     "copilot": "Copilot 免费补全额度已用尽（HTTP 402），已暂停 5 分钟",
     "deepseek": "DeepSeek 账户余额不足（HTTP 402），自动补全已暂停 5 分钟",
+    "hunyuan": "腾讯混元 TokenHub 余额不足或模型未开通（HTTP 402），"
+               "自动补全已暂停 5 分钟",
     "openai": "OpenAI 额度不足（HTTP 402），自动补全已暂停 5 分钟",
 }
 

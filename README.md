@@ -2,7 +2,7 @@
 
 把 **GitHub Copilot Chat** 搬进 Spyder 6：侧栏对话、Agent 自动改代码、改动直接标成红绿行等你逐处接受。
 
-![version](https://img.shields.io/badge/version-0.8.13-blue)
+![version](https://img.shields.io/badge/version-0.8.14-blue)
 ![python](https://img.shields.io/badge/python-3.9%2B-blue)
 ![spyder](https://img.shields.io/badge/Spyder-6.x-8A2BE2)
 ![license](https://img.shields.io/badge/license-MIT-green)
@@ -28,7 +28,7 @@ error: connection-timeout
 
 配了清华 PyPI 镜像也没用——镜像只代理 PyPI 上的包，GitHub Release 的文件是 pip 直接去 `github.com` 取的，不经过镜像。jsDelivr 在国内有节点，实测可达。
 
-> 文件名里的 `-0-` 是故意的：pip 要求 wheel 名字形如 `名称-版本-py3-none-any.whl`，版本段写死才能让 URL 固定。真实版本在 wheel 内部的 METADATA 里，装完仍是 0.8.13，`pip show` 也显示真实版本。`--force-reinstall` 不能省：版本没变时 pip 会说「already installed with the same version」，加它才保证每次都取 CDN 上当前那份。刚发版后 CDN 可能有最多约 12 小时缓存，急着要新包就用下面的方式二。
+> 文件名里的 `-0-` 是故意的：pip 要求 wheel 名字形如 `名称-版本-py3-none-any.whl`，版本段写死才能让 URL 固定。真实版本在 wheel 内部的 METADATA 里，装完 `pip show` 显示的是真实版本（当前 0.8.14）。`--force-reinstall` 不能省：版本没变时 pip 会说「already installed with the same version」，加它才保证每次都取 CDN 上当前那份。刚发版后 CDN 可能有最多约 12 小时缓存，急着要新包就用下面的方式二。
 
 四个参数各有原因，别省：
 
@@ -83,7 +83,7 @@ ERROR: Cannot find command 'git' - do you have 'git' installed and in your PATH?
 
 1. **完全退出 Spyder**（含托盘图标），再启动。运行中的进程握着旧模块，不重启不会生效。
 2. **工具 → 偏好设置 → 插件 → Copilot Chat** 勾选启用。
-3. 回到面板，设置里选模型 provider。Copilot 走设备流授权，DeepSeek / OpenAI / Anthropic / Ollama 等填 API key。
+3. 回到面板，设置里选模型 provider。Copilot 走设备流授权；DeepSeek / OpenAI / Anthropic / Ollama 等填 API key；腾讯混元 Hy4 填 [TokenHub](https://console.cloud.tencent.com/tokenhub/apikey) 的 Key（见[腾讯混元 Hy4](#hunyuan)）。
 
 想确认装对了：`python -c "import spyder_copilot_chat as p; print(p.__version__, p.__file__)"`，路径里应该有 user site（Windows 是 `AppData\Roaming\Python\...`）；如果指到别的 Python 的 `Lib\site-packages`，Spyder 是看不见的，按上面加 `--user` 重装一次。
 
@@ -196,7 +196,7 @@ rm -rf ~/.spyder_copilot_chat                                         # macOS / 
 
 请求失败时给的是卡片，不是一串 `API 402: {"error":...}`：第一行说清是什么问题（余额不足 / Key 失效 / 限流 / 模型名错 / 对话太长 / 连不上），第二行列出发请求用的提供方和模型，接着引用服务端原文，然后给两三条能照着做的步骤——该充值的给充值页链接，该换模型的告诉你去哪换。
 
-同一个状态码在不同服务商那里是两件事：402 在 DeepSeek 是「余额不足」，在 Copilot 才是「订阅额度用完」。旧版本一律报成后者，于是 DeepSeek 欠费的用户被要求去升级 Copilot 订阅。
+同一个状态码在不同服务商那里是几件不同的事：402 在 DeepSeek 是「余额不足」，在 Copilot 是「订阅额度用完」，在腾讯混元 TokenHub 还可能是「模型服务未开通」；401 在 TokenHub 最常见的是 Key 与地域不匹配。旧版本一律报成 Copilot 订阅额度，于是 DeepSeek 欠费的用户被要求去升级 Copilot 订阅。
 
 ![402 余额不足](docs/images/api-error-402-card-dark.png)
 
@@ -209,6 +209,39 @@ rm -rf ~/.spyder_copilot_chat                                         # macOS / 
 ![字号对比](docs/images/font-size-compare-dark.png)
 
 `font_size` 是正文，`ui_font_size` 是顶栏、按钮、状态行，`font_family` 是字族（空 = 跟随系统）。代码块始终用等宽字体，不受 `font_family` 影响。
+
+<a id="hunyuan"></a>
+
+## 腾讯混元 Hy4（TokenHub）
+
+从 v0.8.14 起，设置页的「AI 服务商」里可以直接选 **腾讯混元 Hy4（TokenHub）**，不用再拿「OpenAI 兼容」手填地址。产品与接口文档见 [Hy AI Studio 文档中心](https://aistudio.tencent.com/hunyuan/doc-center)。
+
+**三步配好**
+
+1. 在 [TokenHub API Key 控制台](https://console.cloud.tencent.com/tokenhub/apikey) 创建 Key，并在 [TokenHub 控制台](https://console.cloud.tencent.com/tokenhub) 确认 `hy4` 模型服务已开通。
+2. 设置里选「腾讯混元 Hy4（TokenHub）」→ 粘贴 Key → 模型选 `hy4`（或 `hy4-preview`）。
+3. 确认 API 地址与 Key 的**地域一致**——Key 按地域签发，广州的 Key 拿去新加坡地址用会 401。
+
+| 地域 | API 地址 |
+|---|---|
+| 广州（默认） | `https://tokenhub.tencentcloudmaas.com/v1` |
+| 广州短别名 | `https://tokenhub.tencentmaas.com/v1` |
+| 新加坡 | `https://tokenhub-intl.tencentcloudmaas.com/v1` |
+| 硅谷 | `https://tokenhub-us.tencentcloudmaas.com/v1` |
+
+地址栏的 tooltip 里也列了这几个备选；鼠标停上去就能看到。
+
+![Hy4 设置页](docs/images/hy4-provider-settings-dark.png)
+
+**能力**：1M 上下文（960k 输入 / 64k 输出）、图片理解、Function Calling / Agent 工具调用、结构化输出。官方标注 Hy4 支持看图，插件按 OpenAI 多模态 `image_url` 格式发送，`Ctrl+V` 粘贴的截图可以直接问它。
+
+**深度思考**：默认开启，插件用 `thinking: {"type": "enabled"}` 显式控制。思考强度只给 `high`（官方默认）和 `no_think`（等价于关思考）——`low` / `max` 是 DeepSeek 的取值，切到 Hy4 时会自动回落到 `high`，不会发成 400。带工具的 Agent 对话里会启用 Preserved Thinking，把上一轮的 `reasoning_content` 原样回填，避免多轮工具调用时缓存命中率下降。`max_tokens` 自动截到 64K 输出上限，流式请求会带 `stream_options.include_usage` 以便正确统计用量与成本（默认刊例价：输入 ¥6 / 百万 tokens、输出 ¥18 / 百万 tokens，可在设置里改）。
+
+**报错**：TokenHub 的 402 有两种含义——账户余额 / 额度不足，或这个模型服务还没开通；401 最常见的是 Key 与地域不匹配。错误卡片会按这两种情况分别给处置，不会再串成 DeepSeek 充值或 Copilot 订阅。流式响应里夹带的 `{"error": ...}` 帧（HTTP 200 里也可能出现）同样会被识别成错误，不会显示成「回答莫名中断」。
+
+![Hy4 的 402 错误卡片](docs/images/hy4-error-402-dark.png)
+
+> 这条链路按 TokenHub 公开的 OpenAI 兼容接口实现，端到端测试用本地 mock 服务覆盖请求体 / SSE / 错误帧 / 工具回填；没有真实 Key 时不发线上请求，实际可用模型以控制台开通情况为准。`hy4-preview` 官方另支持 `reasoning_effort: none`，设置页目前按正式版 `hy4` 统一给 `high / no_think`。
 
 ## 安装位置
 
@@ -223,7 +256,7 @@ rm -rf ~/.spyder_copilot_chat                                         # macOS / 
 - **AI 聊天面板** — 在 Spyder 中与 AI 对话，支持流式输出
 - **图片附件** — `Ctrl+V` 粘贴截图 / 拖图片文件 / 图钉按钮选文件，缩略图直接发给多模态模型（支持视觉的模型才能读）
 - **Agent 模式** — AI 可以读取文件、搜索代码、创建文件、运行命令等
-- **多 Provider 支持** — GitHub Copilot / DeepSeek / OpenAI / Anthropic / Ollama 等 10 个服务商
+- **多 Provider 支持** — GitHub Copilot / 腾讯混元 Hy4 / DeepSeek / OpenAI / Anthropic / Ollama 等 11 个服务商（[Hy4 配置说明](#hunyuan)）
 - **内联聊天** — 在编辑器中快速对话，直接针对选中代码提问
 
 ### 🔍 子 Agent 系统

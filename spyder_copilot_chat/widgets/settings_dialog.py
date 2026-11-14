@@ -62,6 +62,54 @@ PROVIDERS = {
         "models": ["deepseek-flash", "deepseek-v4-pro"],
         "default_model": "deepseek-flash",
         "supports_agent": True,
+        "supports_thinking": True,
+        "reasoning_efforts": ("low", "high", "max"),
+        "context_window": 1048576,
+    },
+    # ── 腾讯混元 Hy4（TokenHub）────────────────────────────────────
+    # 产品文档入口：https://aistudio.tencent.com/hunyuan/doc-center
+    # 接口契约（TokenHub 官方文档）：
+    #   API Usage Instructions  /document/product/1300/78941 —— 地域域名、
+    #       Authorization: Bearer、GET /v1/models、OpenAI / Anthropic 双协议
+    #   Model list             /document/product/1300/78934 —— hy4 /
+    #       hy4-preview，1M 上下文（960k 输入 / 64k 输出）、图片理解、
+    #       Function Calling、Caching、Deep Reasoning (Preserved Thinking)
+    #   Deep Reasoning         /document/product/1300/80637 —— thinking
+    #       {"type":"enabled"|"disabled"}；Hy4 默认 enabled，
+    #       reasoning_effort 仅 high / no_think（preview 为 none / high）
+    # 地域（实测三个域名均可达，无 Key 时返回 401）：
+    #   广州   https://tokenhub.tencentcloudmaas.com/v1
+    #          短别名 https://tokenhub.tencentmaas.com/v1
+    #   新加坡 https://tokenhub-intl.tencentcloudmaas.com/v1
+    #   硅谷   https://tokenhub-us.tencentcloudmaas.com/v1
+    # Key 在 https://console.cloud.tencent.com/tokenhub/apikey 创建，
+    # 按地域签发、不通用；填错地域会直接 401。
+    "hunyuan": {
+        "label": "腾讯混元 Hy4（TokenHub）",
+        "default_url": "https://tokenhub.tencentcloudmaas.com/v1",
+        "chat_endpoint": "/chat/completions",
+        "needs_api_key": True,
+        "needs_oauth": False,
+        "models": ["hy4", "hy4-preview"],
+        "default_model": "hy4",
+        "supports_agent": True,
+        "supports_thinking": True,
+        "reasoning_efforts": ("high", "no_think"),
+        # TokenHub 需要显式 stream_options.include_usage 才在流末尾给 usage
+        "stream_usage": True,
+        "max_output_tokens": 65536,
+        "context_window": 1048576,
+        # 官方刊例价（人民币 / 百万 tokens）：输入 6 元、输出 18 元、
+        # 缓存命中 0.3 元。仅作为默认显示值，用户可在设置里改。
+        "price_input_per_million": 6.0,
+        "price_output_per_million": 18.0,
+        "key_console": "https://console.cloud.tencent.com/tokenhub/apikey",
+        "docs": "https://aistudio.tencent.com/hunyuan/doc-center",
+        "alt_urls": (
+            "https://tokenhub.tencentmaas.com/v1",
+            "https://tokenhub-intl.tencentcloudmaas.com/v1",
+            "https://tokenhub-us.tencentcloudmaas.com/v1",
+        ),
     },
     # ── OpenAI ──────────────────────────────────────────────────────
     "openai": {
@@ -188,7 +236,7 @@ UNSUPPORTED_PROVIDERS = {
 
 # UI 下拉框中的 Provider 顺序（不含未实现的 Azure / Gemini）
 SELECTABLE_PROVIDER_ORDER = [
-    "copilot", "deepseek", "openai", "anthropic", "xai",
+    "copilot", "hunyuan", "deepseek", "openai", "anthropic", "xai",
     "openrouter", "ollama", "custom",
 ]
 
@@ -767,6 +815,13 @@ def get_provider_config():
         "agent_mode": cfg.get("agent_mode", True),
         "auto_execute": cfg.get("auto_execute", False),
         "supports_agent": provider["supports_agent"],
+        # v0.8.14：把「这一家该怎么发请求」随配置带给 ChatWorker，
+        # worker 里不再写第二份 provider 分支；测试也能直接构造 cfg。
+        "supports_thinking": provider.get("supports_thinking", False),
+        "reasoning_efforts": list(provider.get("reasoning_efforts") or ()),
+        "stream_usage": provider.get("stream_usage", False),
+        "max_output_tokens": provider.get("max_output_tokens", 0),
+        "provider_docs": provider.get("docs", ""),
         "needs_oauth": provider.get("needs_oauth", False),
         "needs_api_key": provider.get("needs_api_key", False),
         "unsupported_reason": UNSUPPORTED_PROVIDERS.get(pname, ""),
@@ -799,10 +854,16 @@ def get_provider_config():
         "verify_command": cfg.get("verify_command", ""),
         "verify_timeout": cfg.get("verify_timeout", 30),
         "verify_max_attempts": cfg.get("verify_max_attempts", 2),
+        # 上下文窗口 / 单价跟着 Provider 走：Hy4 是 1M 上下文、
+        # 6 元 / 18 元（每百万 tokens）。用户显式改过的值优先。
         "context_window": cfg.get(
-            "context_window", 1048576 if pname == "deepseek" else 128000),
-        "price_input_per_million": cfg.get("price_input_per_million", 0.0),
-        "price_output_per_million": cfg.get("price_output_per_million", 0.0),
+            "context_window", provider.get("context_window", 128000)),
+        "price_input_per_million": cfg.get(
+            "price_input_per_million",
+            provider.get("price_input_per_million", 0.0)),
+        "price_output_per_million": cfg.get(
+            "price_output_per_million",
+            provider.get("price_output_per_million", 0.0)),
         "task_persistence": cfg.get("task_persistence", True),
         # v0.5.6 P1：规则 / Skills / 安全 / 审计 / 索引 / 分模型
         "rules_enabled": cfg.get("rules_enabled", True),
@@ -933,12 +994,19 @@ class SettingsDialog(QDialog):
         auth_row.addWidget(self._logout_btn)
         auth_row.addWidget(self._auth_status)
         auth_row.addStretch()
-        form.addRow("认证:", auth_row)
+        self._auth_label = QLabel("认证:")
+        # 显式拿住标签：非 Copilot 时控件隐藏，标签也得跟着隐藏，
+        # 否则设置页会留一行空的「认证:」。
+        form.addRow(self._auth_label, auth_row)
 
         # 模型：Copilot 走 /models 动态列表；其它 Provider 用注册表里的静态列表
         model_row = QHBoxLayout()
         self._model_combo = QComboBox()
         self._model_combo.setEditable(True)
+        # 全局 QSS 已清掉内嵌 QLineEdit 的 padding（见 theme.build_qss），
+        # 但 combo 自身 sizeHint 只有 22px，扣掉上下边距后内嵌输入框
+        # 仅剩 12px，13px 的字下半截仍会被切。给足高度。
+        self._model_combo.setMinimumHeight(30)
         self._refresh_models_btn = QPushButton("刷新列表")
         self._refresh_models_btn.setToolTip("重新从 GitHub Copilot 获取模型列表")
         self._refresh_models_btn.clicked.connect(
@@ -970,21 +1038,27 @@ class SettingsDialog(QDialog):
         self._max_tokens_spin.setSingleStep(256)
         form.addRow("最大 Token:", self._max_tokens_spin)
 
-        # DeepSeek 官方文档：思考模式默认开启，必须用 thinking 显式控制。
+        # DeepSeek / 腾讯混元 Hy4 的深度思考默认开启，必须用 thinking
+        # 字段显式控制；其余 Provider 没有这个字段，控件会禁用。
         self._thinking_combo = QComboBox()
         self._thinking_combo.addItem("关闭（推荐）", "disabled")
         self._thinking_combo.addItem("开启", "enabled")
         self._thinking_combo.setToolTip(
-            "仅 DeepSeek 有效。关闭时 temperature 生效，工具调用与 FIM 补全更稳定；"
-            "开启时 temperature 不生效，输出预算自动提升到官方默认 64K。")
+            "仅 DeepSeek / 腾讯混元 Hy4 有效。关闭时 temperature 生效，工具调用与 "
+            "FIM 补全更稳定；开启时 temperature 不生效，输出预算自动提升。"
+            "Hy4 也可用「思考强度 → 不思考 (no_think)」单独关掉。")
         form.addRow("思考模式:", self._thinking_combo)
 
         self._effort_combo = QComboBox()
-        for label, value in (("低 (low)", "low"),
-                             ("高 (high，官方默认)", "high"),
-                             ("最高 (max)", "max")):
-            self._effort_combo.addItem(label, value)
-        self._effort_combo.setToolTip("仅思考模式开启时生效")
+        self._EFFORT_LABELS = {
+            "low": "低 (low)",
+            "high": "高 (high，官方默认)",
+            "max": "最高 (max)",
+            "none": "不思考 (none)",
+            "no_think": "不思考 (no_think，Hy4)",
+        }
+        self._fill_effort_combo("deepseek", "high")
+        self._effort_combo.setToolTip("仅思考模式开启时生效；不同 Provider 允许的取值不同")
         form.addRow("思考强度:", self._effort_combo)
         self._thinking_combo.currentIndexChanged.connect(
             self._on_thinking_changed)
@@ -1384,6 +1458,7 @@ class SettingsDialog(QDialog):
             "矢量线性图标、紧凑顶栏、底部统一 composer、可折叠工具痕迹。\n\n"
             "支持的 Provider：\n"
             "  • GitHub Copilot（设备码登录 + /models 动态模型）\n"
+            "  • 腾讯混元 Hy4（TokenHub：hy4 / hy4-preview，1M 上下文、看图、工具调用）\n"
             "  • DeepSeek（deepseek-flash / deepseek-v4-pro，按官方文档配置）\n"
             "  • OpenAI • Anthropic Claude • xAI Grok\n"
             "  • OpenRouter • Ollama（本地）• 自定义 OpenAI 兼容\n\n"
@@ -1404,6 +1479,16 @@ class SettingsDialog(QDialog):
 
         self._api_url_edit.setText(p.get("default_url", ""))
         self._api_url_edit.setEnabled(key != "copilot")
+        # TokenHub 的 Key 按地域签发：切地域必须同时换 Key，写进 tooltip
+        # 比写在 README 里更容易在出错时看到。
+        alt_urls = p.get("alt_urls") or ()
+        if alt_urls:
+            self._api_url_edit.setToolTip(
+                "API Key 按地域签发，不能跨地域调用；换地址记得换 Key。\n"
+                "可选接入地址：\n  " + "\n  ".join(alt_urls)
+                + "\nKey 创建：" + p.get("key_console", ""))
+        else:
+            self._api_url_edit.setToolTip("")
 
         needs_key = p.get("needs_api_key", False) and key not in ("copilot", "ollama")
         self._api_key_edit.setEnabled(needs_key)
@@ -1414,9 +1499,13 @@ class SettingsDialog(QDialog):
         is_cp = key == "copilot"
         self._refresh_models_btn.setVisible(is_cp)
         self._model_status.setVisible(is_cp)
-        # 思考模式相关字段只对 DeepSeek 有效
-        self._thinking_combo.setEnabled(key == "deepseek")
-        self._on_thinking_changed()
+        # 思考模式只对声明了 supports_thinking 的 Provider 开放
+        # （DeepSeek / 腾讯混元 Hy4）。
+        if hasattr(self, "_thinking_combo"):
+            self._thinking_combo.setEnabled(p.get("supports_thinking", False))
+            self._fill_effort_combo(
+                key, self._config.get("reasoning_effort", "high"))
+            self._on_thinking_changed()
 
         self._model_combo.clear()
         if is_cp:
@@ -1430,6 +1519,7 @@ class SettingsDialog(QDialog):
         self._login_btn.setVisible(is_cp)
         self._logout_btn.setVisible(is_cp)
         self._auth_status.setVisible(is_cp)
+        self._auth_label.setVisible(is_cp)
         if is_cp:
             self._update_auth_status()
             # 缓存为空时后台拉取一次，避免打开设置页就卡住
@@ -1437,12 +1527,36 @@ class SettingsDialog(QDialog):
                 self._refresh_models_async(manual=False)
 
     def _on_thinking_changed(self, idx=None):
-        """思考强度仅在 DeepSeek + 思考模式开启时可编辑。"""
+        """思考强度仅在支持 thinking 的 Provider + 思考模式开启时可编辑。"""
         if not hasattr(self, "_effort_combo"):
             return
-        enabled = (self._provider_combo.currentData() == "deepseek"
+        key = self._provider_combo.currentData()
+        p = PROVIDERS.get(key, {})
+        enabled = (p.get("supports_thinking", False)
                    and self._thinking_combo.currentData() == "enabled")
         self._effort_combo.setEnabled(enabled)
+
+    def _fill_effort_combo(self, provider, preferred="high"):
+        """按 Provider 允许的取值重建思考强度下拉。
+
+        DeepSeek 是 low / high / max，Hy4 只有 high / no_think
+        （preview 是 none / high）。把别家不认识的档位塞进请求体，
+        TokenHub 会直接 400，所以下拉里根本不该出现。
+        """
+        if not hasattr(self, "_effort_combo"):
+            return
+        p = PROVIDERS.get(provider, {})
+        values = list(p.get("reasoning_efforts") or ("low", "high", "max"))
+        self._effort_combo.blockSignals(True)
+        self._effort_combo.clear()
+        for value in values:
+            self._effort_combo.addItem(
+                self._EFFORT_LABELS.get(value, value), value)
+        idx = self._effort_combo.findData(preferred)
+        if idx < 0:
+            idx = self._effort_combo.findData("high")
+        self._effort_combo.setCurrentIndex(max(idx, 0))
+        self._effort_combo.blockSignals(False)
 
     def _fill_model_combo(self, models, preferred=""):
         """填充模型下拉框（保留用户当前输入）"""
@@ -1559,7 +1673,12 @@ class SettingsDialog(QDialog):
         idx = self._provider_combo.findData(pname)
         if idx >= 0:
             self._provider_combo.setCurrentIndex(idx)
-        self._api_url_edit.setText(self._config.get("api_url", ""))
+        # 配置里没存 api_url 时（尤其刚切到新 Provider），显示该 Provider
+        # 的默认地址。以前这里直接写空串，把 _on_provider_changed 填好的
+        # 默认 URL 又抹掉，用户看到的是空白输入框。
+        self._api_url_edit.setText(
+            self._config.get("api_url", "")
+            or PROVIDERS.get(pname, PROVIDERS["deepseek"]).get("default_url", ""))
         self._api_key_edit.setText(self._config.get("api_key", ""))
         # 模型：配置里没有时用动态/静态默认值
         if pname == "copilot":

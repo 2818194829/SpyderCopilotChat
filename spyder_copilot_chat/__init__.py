@@ -323,8 +323,34 @@ v0.8.4 "Fold Edition" — 过程收进折叠面板，只留结论：
   - 过程区用 surface_alt 底色 + 圆角与正文分层，尺寸策略设成 Maximum，
     否则外层布局会把剩余空间全分给它，灰块被拉高、正文挤在顶部
 
+v0.8.7 "Blind Write Edition" — 用 run_command 写盘时也必须出现红绿：
+  - 反馈是「改了文件，编辑器里一点颜色都没有，连一句失败提示都没有」。
+    审计日志给了答案：弱模型（deepseek-flash 一类）几乎不用 edit_file，
+    而是 python -c "open(r'D:\\...\\a.py','w').write(...)" / 重定向 / echo
+  - 这类命令的参数里没有 filepath，affected_files 解析为空 ⇒ 写盘前
+    快照为空 ⇒ _stage_editor_reviews 直接 return。整条预览链路静默哑火，
+    而且因为「没有 items」，连失败文案都不会出现——最难查的那种失败
+  - affected_files 新增 paths_from_command：从命令文本反推源文件。
+    双引号 / 单引号必须**各扫各的**——python -c "…open(r'D:\\a b.py')…"
+    这种嵌套写法用 alternation 写成一个正则，双引号会把里面的单引号
+    整段吃掉，结果只抓到 "b.py"
+  - 目录级兜底快照：一批里只要有 run_command，就在执行前扫一遍项目源
+    文件的 (mtime_ns, size)，事后比对出真正被改的文件。不依赖模型怎么
+    写字，上限 4000 文件 / 12 MB / 单文件 512 KB
+  - _changed_by_scan 的 scan 必须由调用方传入：_stage_editor_reviews
+    开头就把 self._review_scan 取走清空了，从 self 上再读只会拿到 None，
+    于是每次都判定「什么都没改」
+  - stage() 的未保存门禁改成「buffer 是否还停在改动前原文」：正常复核
+    时磁盘已是新内容、buffer 还是旧内容，用「buffer ≠ 磁盘」当判据
+    必然误判，isModified 一置位就永远复核不了
+  - 一次最多铺开 8 个文件（py 优先）：一次开二十张 tab 比看不到更糟
+  - 新增 /diffdemo 自检：对当前文件做一份**副本**造三处假改动并预览，
+    不动原文件。一条命令分清「渲染没生效」还是「触发链路没走到」
+  - 新增 docs/images/inline-editor-{dark,light}.png：装饰走真实的
+    TextDecorationsManager 出图，过滤规则与现场一致
+
 """
 
-__version__ = "0.8.6"
-__edition__ = "stopped_clock"
+__version__ = "0.8.7"
+__edition__ = "blind_write"
 

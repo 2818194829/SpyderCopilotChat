@@ -39,7 +39,10 @@ from ..copilot_client import (
     TOOL_GROUP_REVIEW, TOOL_GROUP_WEB,
 )
 from .agentic_actions import execute_tool, get_mcp_tool_definitions
-from .approval_card import ApprovalCard, needs_approval, EXECUTE_TOOLS
+from .approval_card import (
+    ApprovalCard, needs_approval, EXECUTE_TOOLS,
+    SHELL_TOOLS, SOURCE_SUFFIXES,
+)
 from .audit import configure_audit, get_audit_log
 from .audit_viewer import AuditViewerDialog
 from .meta_tools import META_TOOL_DEFINITIONS, META_TOOL_NAMES
@@ -107,6 +110,59 @@ PLAN_ALLOWED_TOOLS = set(
         "get_symbol_at_position", "list_sessions", "memory_recall",
     ]
 ) | set(META_TOOL_NAMES)
+
+# ── 目录级兜底快照（v0.8.7）────────────────────────────────────────────
+# 弱模型用 run_command 写盘时，工具参数里没有可解析的文件路径。事后
+# 靠 mtime 比对找出真正的改动，是唯一不依赖「模型怎么写字」的办法。
+_SCAN_SKIP_DIRS = {
+    ".git", ".hg", ".svn", "__pycache__", "node_modules", ".venv", "venv",
+    "env", "dist", "build", ".mypy_cache", ".pytest_cache", ".ruff_cache",
+    ".idea", ".vscode", ".ipynb_checkpoints", "site-packages", ".tox",
+    ".eggs",
+}
+_SCAN_MAX_FILES = 4000
+_SCAN_MAX_BYTES = 12 * 1024 * 1024
+_SCAN_MAX_FILE = 512 * 1024
+
+
+def _scan_sources(root):
+    """扫一遍项目源文件，返回 ``{绝对路径: (mtime_ns, size)}``。
+
+    只在「这一批工具调用可能写盘但路径算不出来」时才调用。上限是硬
+    的：4000 个文件 / 12 MB / 单文件 512 KB，超了就截断 —— 宁可漏掉
+    冷门文件，也不能让主线程在这里卡住。
+    """
+    if not root or not os.path.isdir(root):
+        return {}
+    out = {}
+    budget = _SCAN_MAX_BYTES
+    for base, dirs, names in os.walk(root):
+        dirs[:] = [d for d in dirs
+                   if d not in _SCAN_SKIP_DIRS and not d.startswith(".")]
+        for name in names:
+            if not name.lower().endswith(SOURCE_SUFFIXES):
+                continue
+            path = os.path.join(base, name)
+            try:
+                st = os.stat(path)
+            except OSError:
+                continue
+            if st.st_size > _SCAN_MAX_FILE:
+                continue
+            budget -= st.st_size
+            if budget < 0 or len(out) >= _SCAN_MAX_FILES:
+                return out
+            out[path] = (st.st_mtime_ns, st.st_size)
+    return out
+
+
+def _batch_may_write_blindly(tool_calls):
+    """这一批里有没有「会写盘、但参数里没有文件路径」的工具。"""
+    for tc in tool_calls or []:
+        name = (tc.get("function") or {}).get("name", "")
+        if name in SHELL_TOOLS:
+            return True
+    return False
 
 
 def _format_api_error(exc):
@@ -1705,6 +1761,7 @@ class CopilotChatPanel(QWidget):
         # v0.7.9：编辑器内联 diff 复核（Cursor 式接受 / 撤销）
         self._review_provider = None   # 插件注入：items -> None
         self._review_before = {}       # {path: 写盘前内容}
+        self._review_scan = None       # 目录级兜底快照（见 _scan_sources）
         self._editor_timer = QTimer(self)
         self._editor_timer.setSingleShot(True)
         self._editor_timer.setInterval(250)
@@ -2759,6 +2816,9 @@ class CopilotChatPanel(QWidget):
                 if cmd.get("action") == "history":
                     self._show_history()
                     return
+                if cmd.get("action") == "diffdemo":
+                    self._run_inline_diff_demo()
+                    return
                 prompt = cmd.get("prompt", "")
                 if prompt:
                     # 获取编辑器选中文本
@@ -3154,6 +3214,14 @@ class CopilotChatPanel(QWidget):
         if (self._busy or self._awaiting_approval
                 or (self._worker is not None and self._worker.isRunning())):
             return self._redirect(text)
+
+        # /diffdemo：不发给模型，直接在编辑器里演示一次内联 diff。
+        # 用户反复遇到「改了文件但编辑器里没有红绿」时，这条命令能
+        # 一步分清是「渲染没生效」还是「触发链路没走到」。
+        if text.split()[0].lower() == "/diffdemo":
+            self._input.clear()
+            self._run_inline_diff_demo()
+            return
 
         config = get_provider_config()
         self._config = config
@@ -4064,15 +4132,24 @@ class CopilotChatPanel(QWidget):
         「改动前的原文」。Agent 一旦落盘，被删掉的那几行就没有任何地方
         能查到了 —— 所以判断条件要和两个渲染出口分别对齐，不能只挂在
         provider 上，否则没有编辑器（或内联被关掉）时卡片就成了无源之水。
+
+        v0.8.7：多了一层「目录级兜底」。弱模型常用 ``run_command``
+        （``python -c "open(...,'w').write(...)"`` / 重定向 / echo）写盘，
+        参数里根本没有 ``filepath``，逐工具解析必然落空 —— 于是快照为空、
+        不预览、编辑器里永远没有红绿，连一句失败提示都没有。这里在批量
+        执行前扫一遍项目源文件的 mtime，事后比对出真正被改的文件，
+        不依赖模型用什么手段写盘。
         """
         self._review_before = {}
+        self._review_scan = None
         want_editor = bool(self._review_provider) and bool(
             self._config.get("inline_diff_enabled", True))
         want_chat = self._config.get("chat_diff_mode", "smart") != "off"
         if not (want_editor or want_chat):
             return
         try:
-            files = changed_files_from_calls(tool_calls, base_dir)
+            files = changed_files_from_calls(tool_calls, base_dir,
+                                            include_shell=True)
         except Exception:
             logger.debug("review targets resolve failed", exc_info=True)
             return
@@ -4084,6 +4161,152 @@ class CopilotChatPanel(QWidget):
             except OSError:
                 self._review_before[path] = None   # 原本不存在（新建）
 
+        # 这一批里有「会写盘但路径算不出来」的工具：留一份目录快照兜底
+        if _batch_may_write_blindly(tool_calls):
+            try:
+                scan = _scan_sources(base_dir)
+            except Exception:
+                logger.debug("source scan failed", exc_info=True)
+                return
+            self._review_scan = scan
+            for path in scan:
+                if path in self._review_before:
+                    continue
+                try:
+                    with open(path, "r", encoding="utf-8",
+                              errors="replace") as fh:
+                        self._review_before[path] = fh.read()
+                except OSError:
+                    self._review_before[path] = None
+
+    # ── v0.8.7：内联 diff 自检 ─────────────────────────────────────
+
+    def _current_editor_text(self):
+        """当前 Spyder 编辑器里的 (路径, 全文)。没有编辑器时返回 (None, "")。"""
+        try:
+            win = self.window()
+            if not (win and hasattr(win, "get_plugin")):
+                return None, ""
+            plugin = win.get_plugin("editor")
+            if plugin is None:
+                return None, ""
+            try:
+                path = plugin.get_current_filename() or ""
+            except Exception:
+                path = ""
+            editor = plugin.get_current_editor()
+            text = editor.toPlainText() if editor is not None else ""
+            return (path or None), (text or "")
+        except Exception:
+            logger.debug("current editor text failed", exc_info=True)
+            return None, ""
+
+    @staticmethod
+    def _demo_text(text):
+        """在当前文件内容上造几处假改动：改一行、加一行、删一行。"""
+        lines = text.split("\n")
+        if len(lines) < 5:
+            return text + ("\n# ↓ 内联 diff 自检：这一行是新增的（绿色）\n")
+        idx = max(1, len(lines) // 3)
+        while idx < len(lines) - 2 and not lines[idx].strip():
+            idx += 1
+        out = list(lines)
+        out[idx] = out[idx] + "   # ← 被修改的行"
+        out.insert(idx + 1, "# ← 新增的一行（绿色底）")
+        drop = idx + 2
+        while drop < len(out) - 1 and not out[drop].strip():
+            drop += 1
+        if drop < len(out) - 1:
+            del out[drop]
+        return "\n".join(out)
+
+    def _run_inline_diff_demo(self):
+        """对当前文件做一份**副本**并预览，绝不碰用户的文件。"""
+        provider = self._review_provider
+        if provider is None:
+            self._add_msg(
+                "assistant",
+                "✕ 编辑器内联预览没有接上（插件没有把预览通道注入面板）。"
+                "请重启 Spyder 后再试；若仍然这样，请把这句话发给我。")
+            return
+        path, text = self._current_editor_text()
+        if not text.strip():
+            self._add_msg("assistant",
+                          "请先在编辑器里打开一个文件，再执行 `/diffdemo`。")
+            return
+        try:
+            demo = self._write_demo_copy(path, text)
+        except Exception as exc:                              # noqa: BLE001
+            logger.debug("write demo copy failed", exc_info=True)
+            self._add_msg("assistant", f"✕ 写自检副本失败：{exc}")
+            return
+        try:
+            outcome = provider([(demo, text)])
+        except Exception as exc:                              # noqa: BLE001
+            logger.debug("demo stage failed", exc_info=True)
+            self._add_msg("assistant", f"✕ 自检失败：{exc}")
+            return
+        staged = 0
+        reasons = []
+        if isinstance(outcome, dict):
+            staged = int(outcome.get("staged") or 0)
+            reasons = [r for _p, r in (outcome.get("failures") or [])]
+        else:
+            staged = int(outcome or 0)
+        name = os.path.basename(demo)
+        if staged:
+            self._add_msg(
+                "assistant",
+                f"✓ 内联 diff 自检已生效：已在编辑器里打开 `{name}`，"
+                "应当看到红色删除线、绿色新增行，右上角有「接受修改 / 撤销」，"
+                "鼠标移到改动处还有 ✓ / ✕。\n\n"
+                "这是**副本**，你的原文件没有被改动；看完直接关掉这个标签页即可。"
+                "如果这里仍然看不到颜色，说明渲染被别的插件覆盖了，"
+                "请把 Spyder 的日志发我。")
+        else:
+            reason = reasons[0] if reasons else "未知原因"
+            self._add_msg(
+                "assistant",
+                f"✕ 自检没能画出来：{reason}。"
+                "这句是定位问题最关键的线索，请把它发给我。")
+
+    @staticmethod
+    def _write_demo_copy(path, text):
+        """把当前内容写成一份带假改动的临时副本，返回副本路径。"""
+        import tempfile
+
+        base = os.path.basename(path or "demo.py")
+        stem, ext = os.path.splitext(base)
+        if not ext:
+            ext = ".py"
+        folder = os.path.join(tempfile.gettempdir(), "copilot_inline_demo")
+        os.makedirs(folder, exist_ok=True)
+        demo = os.path.join(folder, "diff-demo-" + (stem or "demo") + ext)
+        with open(demo, "w", encoding="utf-8") as fh:
+            fh.write(CopilotChatPanel._demo_text(text))
+        return demo
+
+    def _changed_by_scan(self, base_dir, scan):
+        """比对目录快照，返回「确实被改过」的路径集合。
+        ``scan`` 必须由调用方传进来：``_stage_editor_reviews`` 开头就把
+        ``self._review_scan`` 取走并清空了，从 self 上再读一次只会拿到
+        None，于是每次都判定「什么都没改」。
+        """
+        if not scan:
+            return set()
+        try:
+            now = _scan_sources(base_dir)
+        except Exception:
+            return set()
+        changed = set()
+        for path, sig in now.items():
+            if scan.get(path) != sig:
+                changed.add(path)
+        for path in scan:                 # 被删掉的也算改动
+            if path not in now:
+                changed.add(path)
+        return changed
+
     def _stage_editor_reviews(self, tool_calls):
         """工具批次结束后：改动送编辑器内联，并在对话里留一份红绿卡片。
 
@@ -4091,18 +4314,26 @@ class CopilotChatPanel(QWidget):
         逐处接受；对话卡片是「一份可回看的记录」，不受编辑器是否打开、
         装饰是否被主题刷掉的影响。任一出口失败都不该让另一个哑火。
         """
-        before, self._review_before = self._review_before, {}
+        before = getattr(self, "_review_before", None) or {}
+        self._review_before = {}
+        scan = getattr(self, "_review_scan", None)
+        self._review_scan = None
         if not before:
             return
-        try:
-            files = changed_files_from_calls(
-                tool_calls, self._get_project_root())
-        except Exception:
-            files = list(before)
+        root = self._get_project_root()
+        if scan is not None:
+            # 有目录快照就以它为准：run_command 写盘的文件名只能事后算出
+            targets = [p for p in self._changed_by_scan(root, scan)
+                       if p in before]
+        else:
+            try:
+                files = changed_files_from_calls(
+                    tool_calls, root, include_shell=True)
+            except Exception:
+                files = list(before)
+            targets = [p for p in files if p in before]
         items = []
-        for path in files:
-            if path not in before:
-                continue
+        for path in targets:
             try:
                 with open(path, "r", encoding="utf-8",
                           errors="replace") as fh:
@@ -4113,6 +4344,14 @@ class CopilotChatPanel(QWidget):
                 items.append((path, before[path] or ""))
         if not items:
             return
+        # 一次开八张 tab 已经够闹了：python 文件优先，其余只进对话卡片
+        limit = getattr(self, "MAX_EDITOR_REVIEWS", 8)
+        if len(items) > limit:
+            order = sorted(
+                range(len(items)),
+                key=lambda i: (0 if items[i][0].lower().endswith(
+                    (".py", ".pyw")) else 1, i))
+            items = [items[i] for i in order[:limit]]
 
         staged = 0
         failures = []
@@ -4165,6 +4404,8 @@ class CopilotChatPanel(QWidget):
     # 全量铺开会明显拖慢重绘）。
     CHAT_DIFF_MAX_LINES = 90
     CHAT_DIFF_MAX_FILES = 6
+    #: 一次工具批次最多在编辑器里铺开几个文件的复核（其余只进对话卡片）
+    MAX_EDITOR_REVIEWS = 8
 
     def _emit_chat_diffs(self, items, staged=0):
         """把改动画成「红删绿增」贴在对话里（Cline / Roo Code 的形态）。

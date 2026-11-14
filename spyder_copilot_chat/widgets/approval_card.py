@@ -14,6 +14,7 @@ Cline 风格的操作审批卡片（v0.5.0 / Cline Edition）
 import html
 import json
 import os
+import re as _re
 
 from qtpy.QtCore import QSize, QTimer, Qt, Signal
 from qtpy.QtWidgets import (
@@ -199,11 +200,94 @@ def affected_files(name, args, base_dir):
                 if raw and raw != "/dev/null":
                     paths.append(resolve_path(raw, base_dir))
 
+    if name in SHELL_TOOLS:
+        # v0.8.7：run_command 是「写盘大户」，但参数里没有 filepath。
+        # 弱模型（deepseek-flash 一类）尤其爱用
+        #   python -c "open(r'D:\...\a.py','w').write(...)"
+        # 或者 echo/patch/重定向来改文件 —— 只看 filepath 字段的话，
+        # 这一整批改动对内联 diff 就是隐形的：快照为空 ⇒ 不预览 ⇒
+        # 编辑器里永远没有红绿，也不会有一句失败提示。
+        for raw in paths_from_command(args.get("command", ""), base_dir):
+            paths.append(raw)
+
     seen, result = set(), []
     for p in paths:
         if p and p not in seen:
             seen.add(p)
             result.append(p)
+    return result
+
+
+#: 通过命令行写盘的工具：路径只能从命令文本里反推
+SHELL_TOOLS = {"run_command"}
+
+#: 值得做内联预览的源文件后缀
+SOURCE_SUFFIXES = (
+    ".py", ".pyw", ".pyi", ".js", ".jsx", ".ts", ".tsx", ".vue", ".html",
+    ".htm", ".css", ".scss", ".json", ".md", ".txt", ".rst", ".yaml",
+    ".yml", ".toml", ".cfg", ".ini", ".sql", ".sh", ".bat", ".ps1", ".qss",
+)
+
+
+def _looks_like_source(fragment):
+    """一个片段像不像可编辑的源文件路径（而不是 URL / 版本号 / 模块名）。"""
+    text = (fragment or "").strip().strip("\"'`()[]{}<>,;")
+    if not text or len(text) > 320:
+        return False
+    if "://" in text or text.startswith("www."):
+        return False
+    # 路径里不会出现引号 / 括号 / 等号：出现说明这段是命令片段而不是
+    # 路径（``open(r'D:\a.py`` 这种半截货），放进去只会污染快照
+    if any(ch in text for ch in "\"'`()="):
+        return False
+    low = text.lower()
+    if not low.endswith(SOURCE_SUFFIXES):
+        # 允许 "a.py:12" 这种带行号的写法
+        head = low.split(":", 1)[0]
+        if not head.endswith(SOURCE_SUFFIXES):
+            return False
+        text = text[:len(head)]
+    return True
+
+
+def paths_from_command(command, base_dir=None):
+    """从一条 shell 命令里反推它可能写到的源文件。
+
+    只做"尽量多抓"，宁可多也不能漏：多抓的交由后面「内容是否真的
+    变了」再筛一遍，零成本；漏抓则整批改动都对内联 diff 隐形。
+    """
+    if not command or not isinstance(command, str):
+        return []
+    found = []
+    # 1) 引号包起来的片段最可靠（Windows 路径几乎总带空格）。
+    #    双引号和单引号必须**各扫各的**：python -c "…open(r'D:\a b.py')…"
+    #    这种嵌套写法里，双引号一匹配就会把里面的单引号整段吃掉，
+    #    用 alternation 写成一个正则就只能抓到外层那串代码。
+    for pattern in (r'"([^"]{2,320})"', r"'([^']{2,320})'"):
+        for match in _re.finditer(pattern, command):
+            frag = match.group(1)
+            if _looks_like_source(frag):
+                found.append(frag)
+    # 2) 无引号的 token
+    for token in _re.split(r"[\s,;|&<>]+", command):
+        if _looks_like_source(token):
+            found.append(token)
+    # 3) --file=xxx / -o=xxx 之类的赋值形式
+    for match in _re.finditer(r"[-\w]+[=]\s*([^\s\"']{2,320})", command):
+        if _looks_like_source(match.group(1)):
+            found.append(match.group(1))
+
+    result = []
+    for frag in found:
+        text = frag.strip().strip("\"'`()[]{}<>,;")
+        if text.lower().endswith(SOURCE_SUFFIXES) is False:
+            text = text.split(":", 1)[0]
+        try:
+            path = resolve_path(text, base_dir)
+        except Exception:
+            continue
+        if path and path not in result:
+            result.append(path)
     return result
 
 

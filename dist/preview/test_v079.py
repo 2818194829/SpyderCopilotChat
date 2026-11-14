@@ -252,10 +252,22 @@ check("无差异不激活", r.is_active is False)
 
 sb = Sandbox()
 edt = mkeditor(OLD)
-edt.document().setModified(True)     # 用户有未保存改动
+# 用户真在编辑器里动过内容（不是仅仅 modified 标志被 Spyder 置位）
+touched = OLD + "\n# 用户手动加的一行\n"
+edt.setPlainText(touched)
+edt.document().setModified(True)
 r = ed.InlineReview(edt, sb.path, OLD)
-check("buffer 已改 → 不接管", r.stage() is False)
-check("buffer 已改 → 文档不动", edt.toPlainText() == OLD)
+check("buffer 真改过 → 不接管", r.stage() is False)
+check("buffer 真改过 → 文档不动", edt.toPlainText() == touched)
+
+# v0.8.7：只是 modified 标志为真、内容仍是改动前原文 → 必须放行。
+# 正常复核时磁盘已是新内容、buffer 还是旧内容，isModified 一置位就不
+# 再复核的话，Spyder 的几次无关置位就能让这个功能彻底哑火。
+sb = Sandbox()
+edt = mkeditor(OLD)
+edt.document().setModified(True)
+r = ed.InlineReview(edt, sb.path, OLD)
+check("仅 modified 置位 → 放行", r.stage() is True, r.fail_reason)
 
 sb = Sandbox(name="x.py", old="a = 1\nb = 2", new="a = 1\nb = 3")
 edt = mkeditor("a = 1\nb = 2")

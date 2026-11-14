@@ -318,17 +318,23 @@ def execute_tool_batch(tool_calls, base_dir, snapshot=None, cancel_event=None,
 
 # ── 自动验证（后台）────────────────────────────────────────────────────
 
-def changed_files_from_calls(tool_calls, base_dir):
-    """从工具调用参数里取出受影响的文件路径。"""
-    from .approval_card import affected_files, parse_tool_args
+def changed_files_from_calls(tool_calls, base_dir, include_shell=False):
+    """从工具调用参数里取出受影响的文件路径。
+
+    ``include_shell=True`` 时连 run_command 也解析：弱模型常拿它写文件
+    （python -c "open(...,'w')"），不解析就等于这批改动对内联 diff 隐形。
+    """
+    from .approval_card import affected_files, parse_tool_args, SHELL_TOOLS
 
     paths = []
     for tc in tool_calls or []:
         fn = tc.get("function", {}) or {}
-        if fn.get("name", "") not in WRITE_TOOLS:
+        name = fn.get("name", "")
+        if name not in WRITE_TOOLS and not (include_shell
+                                            and name in SHELL_TOOLS):
             continue
         args = parse_tool_args(fn.get("arguments", "{}"))
-        for path in affected_files(fn.get("name", ""), args, base_dir):
+        for path in affected_files(name, args, base_dir):
             if path and path not in paths:
                 paths.append(path)
     return paths

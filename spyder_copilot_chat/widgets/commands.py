@@ -78,6 +78,12 @@ BUILTIN_COMMANDS = [
         "description": "重构代码",
         "prompt": "重构以下代码。改善代码结构、可读性和可维护性，同时保持相同的功能行为。",
     },
+    {
+        "name": "diffdemo",
+        "description": "自检：在编辑器里演示一次内联 diff（不动你的文件）",
+        "prompt": "",
+        "action": "diffdemo",
+    },
 ]
 
 DEFAULT_COMMANDS = [

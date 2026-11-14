@@ -295,10 +295,23 @@ class InlineReview(QObject):
         except RuntimeError:
             self.fail_reason = "编辑器对象已失效"
             return False
-        # 用户 buffer 里有未保存内容：不碰，回退到纯审批卡流程
+        # 用户 buffer 里有未保存内容：不碰，回退到纯审批卡流程。
+        # 判据不能是「buffer 与磁盘不同」—— 正常复核时磁盘已经是新内容、
+        # buffer 还是旧内容，两者必然不同。真正要判的是「buffer 是否还
+        # 停在改动前的原文上」：停着说明 modified 只是 Spyder 的内部误报
+        # （reload / 编码切换 / 语法补全都会置位），可以放心覆盖。
+        try:
+            buffer_text = doc.toPlainText()
+        except (RuntimeError, AttributeError):
+            buffer_text = None
         if doc.isModified():
-            self.fail_reason = "编辑器里还有未保存的修改，暂不干扰"
-            return False
+            same_as_snapshot = (buffer_text is not None
+                                and buffer_text.strip("\r\n")
+                                == self._old_text.strip("\r\n"))
+            if not same_as_snapshot:
+                self.fail_reason = "编辑器里还有未保存的修改，暂不干扰"
+                return False
+
         new_text = _read_text(self.path)
         if new_text is None:
             self.fail_reason = "读不到磁盘上的新内容"
@@ -372,7 +385,69 @@ class InlineReview(QObject):
         # 布局落定后可见范围还会再变一次，补一拍刷新
         QTimer.singleShot(0, self._reveal_ui)
         QTimer.singleShot(0, self._refresh_decorations)
+        # 切前台 tab / 布局落定都发生在 stage 返回之后：等这一拍过去再
+        # 核对一次装饰到底有没有进 setExtraSelections，没进去就自救一遍。
+        QTimer.singleShot(350, self._ensure_painted)
         return True
+
+    def _own_selection_count(self):
+        """当前 setExtraSelections 里有几条落在本次改动的行上。
+
+        不能用 ``kind`` 认亲：``extraSelections()`` 返回的是 C++ 侧的
+        拷贝，PyQt 会把每条重新包成裸 ``ExtraSelection``，我们挂在
+        ``TextDecoration`` 上的自定义属性到这一步已经丢了。只能按
+        光标位置比对。
+        """
+        try:
+            selections = self.editor.extraSelections()
+        except (RuntimeError, AttributeError):
+            return 0
+        positions = set()
+        try:
+            for hunk in self.hunks():
+                for block in hunk.add_blocks + hunk.del_blocks:
+                    if block.isValid():
+                        positions.add(block.position())
+        except (RuntimeError, AttributeError):
+            return 0
+        if not positions:
+            return 0
+        count = 0
+        for sel in selections:
+            try:
+                if sel.cursor.selectionStart() in positions:
+                    count += 1
+            except RuntimeError:
+                continue
+        return count
+
+    def _ensure_painted(self):
+        """装饰被可见范围过滤掉时自救一次。
+
+        Spyder 的 manager 只保留 ``get_buffer_block_numbers()`` 范围内的
+        装饰。staging 结束的那一刻视图可能还挂在后台 tab 上（切前台是
+        插件在 stage 之后才做的），范围算出来是空的，装饰就被丢光了。
+        这里重滚一次再重挂，把「有幽灵行、有按钮条、就是没颜色」这种
+        最难查的失败就地兜住。
+        """
+        if not self._active or not self.deco_count:
+            return
+        if self._own_selection_count():
+            return
+        self._scroll_to_first_hunk()
+        self._apply_decorations()
+        left = self._own_selection_count()
+        if left:
+            logger.info("inline diff repainted after stage: %s", self.path)
+            return
+        try:
+            visible = self.editor.get_buffer_block_numbers()
+        except (RuntimeError, AttributeError):
+            visible = None
+        logger.warning(
+            "inline diff decorations still hidden (visible range %r, "
+            "%d decorations, path=%s)", visible, self.deco_count, self.path)
+
 
     def _refresh_decorations(self, *_args):
         """按当前可见范围重算装饰（滚动 / 光标移动时都要重算）。

@@ -2,6 +2,42 @@
 
 只记录对使用者有影响的变更。最新的在最上面。
 
+## v0.8.7：Blind Write Edition（用 run_command 写盘也要看得见红绿）
+
+反馈是「改了文件，编辑器里一点颜色都没有，连一句失败提示都没有」。
+
+查审计日志，答案很直白：
+
+```
+event=tool_requested  tools=["run_command", "run_command"]
+event=tool_result     tool="run_command"  risk="write"
+```
+
+弱模型（deepseek-flash 一类）几乎不用 `edit_file`，而是
+
+```bash
+python -c "open(r'D:\...\tank_battle.py','w').write(...)"
+```
+
+这类命令的参数里**没有 filepath**，`affected_files` 解析为空 ⇒ 写盘前快照为空 ⇒ `_stage_editor_reviews` 直接 `return`。整条预览链路静默哑火，而且因为「没有 items」，连那句「编辑器内联未生效：…」都不会出现——这是最难查的一种失败。
+
+| 改动 | 说明 |
+|---|---|
+| 命令反推路径 | `affected_files` 新增 `paths_from_command`，从命令文本里抓源文件。**双引号 / 单引号各扫各的**：`python -c "…open(r'D:\a b.py')…"` 这种嵌套写法用 alternation 写成一个正则，双引号会把里面的单引号整段吃掉，结果只能抓到 `b.py` |
+| 目录兜底快照 | 一批里只要有 `run_command`，执行前就扫一遍项目源文件的 `(mtime_ns, size)`，事后比对出真正被改的文件。不依赖模型怎么写文件。上限 4000 文件 / 12 MB / 单文件 512 KB |
+| 未保存门禁修正 | `stage()` 原来的判据是 `isModified()`。可正常复核时磁盘已经是新内容、buffer 还是旧内容，`isModified` 一置位就永远复核不了。改成判断「buffer 是否还停在改动前的原文」 |
+| 最多铺开 8 个文件 | 一次 `run_command` 可能碰到几十个文件，开二十张 tab 比看不到更糟；py 优先，其余只进对话卡片 |
+| `/diffdemo` 自检 | 对当前文件做一份**副本**造三处假改动并预览，不动原文件。一条命令就能分清「渲染没生效」还是「触发链路没走到」 |
+| 装饰自愈 | 切前台 tab 发生在 `stage()` 返回之后，那一刻可见范围可能还是空的，装饰会被 manager 整个丢掉。350ms 后核对一次 `extraSelections`，没上色就重滚重挂 |
+
+顺带修了两个自己引入的 bug：`_changed_by_scan` 从 `self._review_scan` 读快照，而 `_stage_editor_reviews` 开头已经把它取走清空了——于是永远判定「什么都没改」；`_own_selection_count` 用 `kind` 认亲，可 `extraSelections()` 返回的是 C++ 侧拷贝，挂在上面的自定义属性到那一步早就丢了，只能按光标位置比对。
+
+效果（装饰走真实的 `spyder.TextDecorationsManager`，过滤规则与现场一致）：
+
+![内联 diff 深色](docs/images/inline-editor-dark.png)
+
+测试：`dist/preview/test_v087.py` 30/30，覆盖命令反推（引号 / 无引号 / `--opt=val` / 重定向 / 带行号 / URL 反例）、`include_shell` 开关、目录快照、端到端 items、无改动不造 diff、8 个上限与 py 优先、`isModified` 放宽、`/diffdemo` 只碰副本。
+
 ## v0.8.6：Stopped Clock Edition（计时该停就停）
 
 反馈是截图里答案已经写完了，头部还挂着 `▾ 正在处理 1m38s`，秒数一直涨。

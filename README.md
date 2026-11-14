@@ -2,7 +2,7 @@
 
 把 **GitHub Copilot Chat** 搬进 Spyder 6：侧栏对话、Agent 自动改代码、改动直接标成红绿行等你逐处接受。
 
-![version](https://img.shields.io/badge/version-0.8.6-blue)
+![version](https://img.shields.io/badge/version-0.8.7-blue)
 ![python](https://img.shields.io/badge/python-3.9%2B-blue)
 ![spyder](https://img.shields.io/badge/Spyder-6.x-8A2BE2)
 ![license](https://img.shields.io/badge/license-MIT-green)
@@ -37,7 +37,11 @@ Spyder 独立安装包把自带环境目录设成只读 ACL，`pip` 默认会落
 
 编辑器内联 diff：改动直接铺进真实 buffer，顶部「接受修改 / 全部接受 / 撤销」，悬停行尾逐处 ✓ / ✕（`Ctrl+Enter` 全部接受，`Ctrl+Backspace` 全部撤销）。
 
-![编辑器内联 diff](docs/images/inline-diff-light.png)
+![编辑器内联 diff](docs/images/inline-editor-light.png)
+
+不管 Agent 用什么手段落盘都会走到这里——`edit_file` / `apply_patch` 固然算，`run_command` 里的 `python -c "open(...,'w')"`、重定向、`echo` 也算（这类命令参数里根本没有文件路径，靠的是执行前后对项目源文件做一次 `mtime` 比对）。
+
+想确认这台机器上生效没有，在输入框敲 `/diffdemo`：它会拿当前文件做一份**副本**、造三处假改动并预览，原文件一个字不动。
 
 深色主题下同样一套，配色跟随 Spyder 主题自动切换：
 
@@ -46,7 +50,7 @@ Spyder 独立安装包把自带环境目录设成只读 ACL，`pip` 默认会落
 | 删除行 | `#fce3e2` | `#3d2325` |
 | 新增行 | `#dff3e5` | `#1d3428` |
 
-![深色主题](docs/images/inline-diff-dark.png)
+![深色主题](docs/images/inline-editor-dark.png)
 
 ## 过程折叠
 
@@ -103,7 +107,7 @@ Spyder 独立安装包把自带环境目录设成只读 ACL，`pip` 默认会落
 ### ⚡ IDE 集成
 - **FIM 代码补全** — 内联代码补全（需额外配置）
 - **项目上下文** — 自动收集项目文件提供上下文
-- **斜杠命令** — `/fix`, `/explain`, `/tests`, `/plan`, `/optimize`, `/doc`, `/review` 等
+- **斜杠命令** — `/fix`, `/explain`, `/tests`, `/plan`, `/optimize`, `/doc`, `/review` 等；`/diffdemo` 用来自检编辑器内联 diff
 - **Skills 技能系统** — 14 个内置技能，可扩展
 - **自定义指令** — `.instructions.md` 项目/文件级 AI 行为定制
 - **自定义 Agent** — `.agent.md` 定义专属 AI 助手

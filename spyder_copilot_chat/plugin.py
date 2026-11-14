@@ -450,16 +450,26 @@ class CopilotChatPlugin(SpyderDockablePlugin):
 
     # ── v0.7.9：编辑器内联 diff 复核 ───────────────────────────────
 
-    def _review_hub(self):
-        """惰性创建复核会话登记处，并把结果通知接回聊天面板。"""
+    def _ensure_review_hub(self):
+        """惰性创建复核会话登记处，并把结果通知接回聊天面板。
+
+        名字必须和实例字段 ``self._review_hub`` 区分开。v0.7.9 到 v0.8.8
+        这里叫 ``_review_hub``，而 ``on_initialize`` 里同时写了
+        ``self._review_hub = None`` —— 实例字典会遮住类上的同名方法，
+        于是 ``self._review_hub()`` 实际在调用 ``None``，每次都抛
+        ``'NoneType' object is not callable``。整条内联复核链路因此在第
+        一步就断了，而异常被 ``review_files`` 兜住后只剩一句「staging
+        异常」，看起来像是装饰没画出来，实际根本没走到那一步。
+        """
         if getattr(self, "_review_hub", None) is None:
             from .widgets.editor_diff import ReviewHub
 
-            self._review_hub = ReviewHub(self)
+            hub = ReviewHub(self)
             widget = self.get_widget()
             if widget is not None and hasattr(
                     widget, "note_editor_resolution"):
-                self._review_hub.set_notifier(widget.note_editor_resolution)
+                hub.set_notifier(widget.note_editor_resolution)
+            self._review_hub = hub
         return self._review_hub
 
     def _shutdown_review_hub(self):
@@ -490,17 +500,27 @@ class CopilotChatPlugin(SpyderDockablePlugin):
                 result["failures"] = [(p, "当前没有打开的编辑器窗口")
                                       for p, _t in items]
                 return result
-            hub = self._review_hub()
+            hub = self._ensure_review_hub()
             hub.last_failures = []
             last_staged = None
             for path, old_text in items:
-                editor = self._editor_for_path(stack, path)
-                if editor is None:
-                    result["failures"].append((path, "这个文件打不开"))
-                    logger.info("review_files: cannot open %s", path)
+                # 单个文件出问题只算它自己失败：整批一起抛异常的话，
+                # 聊天里只剩一句「staging 异常」，连是哪个文件都没了。
+                try:
+                    editor = self._editor_for_path(stack, path)
+                    if editor is None:
+                        result["failures"].append((path, "这个文件打不开"))
+                        logger.info("review_files: cannot open %s", path)
+                        continue
+                    ok = hub.stage(editor, path, old_text,
+                                   saver=self._save_editor_file)
+                except Exception as exc:
+                    logger.debug("review_files: stage %s failed", path,
+                                 exc_info=True)
+                    result["failures"].append(
+                        (path, "%s: %s" % (type(exc).__name__, exc)))
                     continue
-                if hub.stage(editor, path, old_text,
-                             saver=self._save_editor_file):
+                if ok:
                     result["staged"] += 1
                     last_staged = path
             result["failures"].extend(hub.last_failures)

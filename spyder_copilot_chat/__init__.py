@@ -359,8 +359,23 @@ v0.8.8 (readable)：字号太小、还调不动 —— 三个 bug 叠在一起
     并支持 Ctrl+= / Ctrl+- / Ctrl+0 与对话流里 Ctrl+滚轮
   - 消息视图兜底设置文档默认字体，<br> 空行、流式尾块也跟着正文走
 
+v0.8.9 (wired)：内联复核其实一次都没跑起来 —— 段名被实例字段遮住了
+  - 报错是「编辑器内联未生效：文件 — staging 异常：'NoneType' object
+    is not callable」。路径为空说明异常发生在 review_files 的循环之前，
+    跟装饰 / 可见范围 / diff 计算全无关系
+  - 真因：on_initialize 里写了 self._review_hub = None，而插件类里又有
+    def _review_hub(self)。实例字典优先于类，于是 self._review_hub()
+    实际在调用 None —— v0.7.9 起这条链路第一步就断了，每次都被外层
+    except 兜成一句「staging 异常」，看起来像装饰没画出来
+  - 方法改名 _ensure_review_hub()；ReviewHub 只在本地变量里建好再赋给
+    字段，避免中途又被自己遮住
+  - 单文件失败不再吞掉整批：循环体单独 try，失败项带上文件名与异常类型
+  - 失败文案在路径为空时不再硬凑一个「文件」前缀
+  - 新增静态守卫：全包扫描「实例字段与类方法同名」，这类遮蔽以后会被
+    测试直接拦下（只靠单测 ReviewHub 是发现不了的——它绕过了插件）
+
 """
 
-__version__ = "0.8.8"
-__edition__ = "readable"
+__version__ = "0.8.9"
+__edition__ = "wired"
 

@@ -4618,10 +4618,17 @@ class CopilotChatPanel(QWidget):
                 "悬停查看逐处 ✓ / ✕，或用顶部按钮「接受修改 / 全部接受 / 撤销」"
                 "（Ctrl+Enter 全部接受，Ctrl+Backspace 全部撤销）")
         if failures and not staged:
-            # 静默跳过是最难查的失败：把原因直接摆到对话里
-            reason = "；".join(
-                "%s — %s" % (os.path.basename(p) or "文件", r)
-                for p, r in failures[:2])
+            # 静默跳过是最难查的失败：把原因直接摆到对话里。
+            # 路径为空表示整批级失败（拿不到编辑器 / 登记处建不起来），
+            # 这时别硬凑一个「文件」前缀，直接给原因更有用。
+            def _fmt(item):
+                p, r = item
+                name = os.path.basename(p)
+                return "%s — %s" % (name, r) if name else r
+
+            reason = "；".join(_fmt(it) for it in failures[:2])
+            if len(failures) > 2:
+                reason += "（共 %d 处）" % len(failures)
             self._current_bubble.append_block(
                 f"_编辑器内联未生效：{reason}。改动已在上面用红绿行显示。_")
         self._scroll_to_bottom()

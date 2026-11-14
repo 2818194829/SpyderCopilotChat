@@ -449,7 +449,13 @@ check("三种动作都不崩", True)
 print("\n[8] 插件层")
 from spyder_copilot_chat.plugin import CopilotChatPlugin
 check("插件有 review_files", hasattr(CopilotChatPlugin, "review_files"))
-check("插件有 _review_hub", hasattr(CopilotChatPlugin, "_review_hub"))
+# v0.8.9：入口改名为 _ensure_review_hub —— 原来的 _review_hub 与
+# on_initialize 里的实例字段 self._review_hub = None 同名，实例字典
+# 遮住了方法，review_files 里 self._review_hub() 等于调用 None。
+check("插件有 _ensure_review_hub",
+      hasattr(CopilotChatPlugin, "_ensure_review_hub"))
+check("插件没有会被字段遮蔽的 _review_hub 方法",
+      "_review_hub" not in vars(CopilotChatPlugin))
 check("插件有 _shutdown_review_hub",
       hasattr(CopilotChatPlugin, "_shutdown_review_hub"))
 

@@ -2,7 +2,7 @@
 
 把 **GitHub Copilot Chat** 搬进 Spyder 6：侧栏对话、Agent 自动改代码、改动直接标成红绿行等你逐处接受。
 
-![version](https://img.shields.io/badge/version-0.8.8-blue)
+![version](https://img.shields.io/badge/version-0.8.9-blue)
 ![python](https://img.shields.io/badge/python-3.9%2B-blue)
 ![spyder](https://img.shields.io/badge/Spyder-6.x-8A2BE2)
 ![license](https://img.shields.io/badge/license-MIT-green)

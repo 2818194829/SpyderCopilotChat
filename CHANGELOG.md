@@ -2,6 +2,32 @@
 
 只记录对使用者有影响的变更。最新的在最上面。
 
+## v0.8.9：Wired Edition（内联复核其实一次都没接通）
+
+截图里那句 `编辑器内联未生效：文件 — staging 异常：'NoneType' object is not callable`，注意路径是空的——聊天里那个「文件」是空 basename 的兜底文案。路径为空说明异常发生在 `review_files` **循环之前**，跟装饰、可见范围、diff 计算一点关系都没有。
+
+真因是段名遮蔽：
+
+```python
+# plugin.py，on_initialize()
+self._review_hub = None          # ← 实例字段
+
+# 同一个类里
+def _review_hub(self):           # ← 同名方法
+    ...
+```
+
+实例字典优先于类，所以 `review_files` 里的 `self._review_hub()` 实际在调用 `None`，直接抛 `TypeError`。**自 v0.7.9 引入内联 diff 起，这条链路每一步都断在这里**：红色绿色从来没进过编辑器，异常被外层 `except` 兜成一句「staging 异常」，看起来像装饰没画出来。之前所有关于可见范围过滤、装饰重挂的改动都是对的，但根本没被执行到。
+
+| 改动 | 说明 |
+|---|---|
+| 方法改名 | `_review_hub()` → `_ensure_review_hub()`；`ReviewHub` 先在局部变量建好再赋给字段，避免中途又被自己遮住 |
+| 单文件隔离 | 循环体单独 try。一个文件取不到编辑器不再让整批失败，失败项带上文件名和异常类型 |
+| 文案修正 | 路径为空时不再硬凑「文件 — 」前缀，直接给原因 |
+| 静态守卫 | 新增全包扫描：**类方法名不得与实例字段同名**。这类遮蔽只有走真插件对象才暴露，单测 `ReviewHub` 永远测不到 |
+
+新增 `test_v089.py` 直接拿 `CopilotChatPlugin.review_files` 去跑（注入假 editorstack / 假 editor），18 项全绿；全量 v077/v079–v089 共 352 项全绿。
+
 ## v0.8.8：Readable Edition（字号终于真的能调）
 
 反馈是「字号太小，而且还不能调整字体」。查下来不是一个 bug，是三个叠在一起：

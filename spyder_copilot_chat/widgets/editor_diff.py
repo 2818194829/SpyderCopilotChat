@@ -49,6 +49,15 @@ except Exception:  # pragma: no cover
     TextDecoration = None
     _HAVE_SPYDER_DECORATION = False
 
+try:
+    # Spyder 自己的块数据：面板会把它当成"标准"块信息直接读属性
+    # （见 DiffBlockMark 的说明），能继承就继承，字段天然齐全。
+    from spyder.plugins.editor.utils.editor import (
+        BlockUserData as _SpyderBlockUserData,
+    )
+except Exception:  # pragma: no cover - 非 Spyder 环境 / 版本变动
+    _SpyderBlockUserData = None
+
 #: 装饰在 ``editor.decorations`` 里占用的 key（remove_key 一键回收）
 _DECO_KEY = "copilot_chat_inline_diff"
 
@@ -92,12 +101,59 @@ class DiffBlockMark(QTextBlockUserData):
 
     解法：把每个 mark 的 Python 引用攥在 ``InlineReview._marks``
     里，等它对应的块真的从文档里消失后再放手（见 ``_prune_marks``）。
+
+    **第二个坑（v0.8.9）**：Spyder 自己的面板把 ``block.userData()``
+    当成它自己的 ``BlockUserData`` 用，直接读属性而不做 isinstance：
+
+        # outlineexplorer/api.py: is_cell_header()
+        return data and data.oedata and data.oedata.def_type == ...CELL
+
+        # linenumber.py / scrollflag.py / debuggerpanel.py
+        if data.code_analysis: ...   /  data.breakpoint  ...
+
+    我们的 mark 只有 kind / hunk，于是每次重绘都在 paintEvent 里抛
+    AttributeError（行号面板、调试面板、代码折叠一起刷屏），面板画到
+    一半就中断。所以这里直接继承 Spyder 的 ``BlockUserData`` 并把它的
+    字段按「什么都没有」初始化——对这些消费点来说，这就是一个干净的
+    空数据块；不是 Spyder 环境时退回自带字段的裸实现。
     """
 
+    #: Spyder 的 BlockUserData 在的话就用它：字段齐全，typeof 也对得上
     def __init__(self, kind, hunk):
         QTextBlockUserData.__init__(self)
+        if _SpyderBlockUserData is not None:
+            # editor=None 是安全的：_selection() 在 selection_start 为
+            # None 时直接返回 None，不会碰 self.editor。
+            _SpyderBlockUserData.__init__(self, None)
+        else:                       # 非 Spyder 环境：自带同名字段
+            self.editor = None
+            self.breakpoint = False
+            self.breakpoint_condition = None
+            self.bookmarks = []
+            self.code_analysis = []
+            self.todo = ""
+            self.color = None
+            self.oedata = None
+            self.import_statement = None
+            self.selection_start = None
+            self.selection_end = None
         self.kind = kind      # "del" | "add"
         self.hunk = hunk      # hunk id（int，唯一即可）
+
+    def __getattr__(self, name):
+        """兜底：未知的公开属性一律 None。
+
+        Spyder 各版本往 BlockUserData 上加过不少字段（oedata / todo /
+        import_statement …），消费方又都不做 hasattr。这里统一给 None，
+        让「没有这个字段」等价于「这个块什么都不是」，而不是在
+        paintEvent 里抛异常。
+
+        下划线开头的（含 dunder）照常抛 AttributeError：sip 内部探测和
+        copy / pickle 都靠这个信号判断"没有"。
+        """
+        if name.startswith("_"):
+            raise AttributeError(name)
+        return None
 
 
 class _Hunk(object):
@@ -240,9 +296,21 @@ class ReviewBar(QFrame):
 
     def refresh(self):
         self._apply_style()
+        # 样式表里的 font-size / padding 要等 polish 之后才进 sizeHint。
+        # 首次 refresh 发生在 show() 之前，那时算出来的宽度偏小，
+        # 一旦定下来就不再变——「接受修改」会被挤成省略号。
+        self.ensurePolished()
+        for btn in (self._accept, self._accept_global, self._revert):
+            btn.ensurePolished()
+            btn.setMinimumWidth(btn.sizeHint().width())
         self.adjustSize()
         view = self._review.editor.viewport()
         self.move(max(8, view.width() - self.width() - 22), 8)
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        # 亮相时再量一次：此刻样式已生效，字体比建的时候大
+        self.refresh()
 
 
 class InlineReview(QObject):

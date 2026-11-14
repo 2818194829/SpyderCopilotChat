@@ -30,6 +30,8 @@ API 402: {"error":{"message":"Insufficient Balance (request_id: d5e85940-...)",
 
 **安装 / 卸载文档（README）**：原来只给 `pip install git+https://...`，没装 Git 的 Windows 机器会直接报 `Cannot find command 'git'`。现在把 Releases 的 `.whl` 改成推荐方式（一行命令，不依赖 Git、不现场构建），`git+` 留作开发版并写明前置条件；同时补上 `--user` / `--no-deps` 的原因——用系统 Python 装很容易把插件塞进它自己的 site-packages（Spyder 看不见），或者为了满足 `spyder>=6.0` 再拖一整套 Spyder + PyQt5 进 user site。另新增完整的「卸载」章节：多套解释器分别卸载、`~/.spyder_copilot_chat` 各类数据的删除后果、`spyder.ini` 里的 `[copilot_chat]` 段怎么清。
 
+**一行装最新版（国内网络）**：Release 链接走 `github.com`，国内常见 `Connection to github.com timed out`，配清华 PyPI 镜像也不管用（镜像只代理 PyPI 包）。现在主推 jsDelivr 的固定 URL：仓库新增 `latest/spydercopilotchat-0-py3-none-any.whl`（版本段写死才能让 URL 不变，真实版本在 wheel 的 METADATA 里），`release.yml` 每次发版自动覆盖并推回 main；配合 `--force-reinstall`，重跑同一行永远拿到最新发布版。同时补了手动下载 / 加速前缀 / `git+` 开发版三条备选，并注明包尚未发布到 PyPI。
+
 ## v0.8.12：Vision Edition（截图可以直接粘进输入框）
 
 以前输入框只认文字，剪贴板里的截图粘进去要么没反应、要么变成一个乱码方块。现在三种入口都能用：**Ctrl+V 粘贴截图**、**把图片文件拖进来**、**点输入区左下角的图钉按钮选文件**。

@@ -11,31 +11,52 @@
 
 ## 安装
 
-### 方式一：装发布版 wheel（推荐，不需要 Git）
+### 方式一：一行命令装最新版（推荐，不需要 Git，国内网络可用）
 
 ```bash
-python -m pip install --user --no-deps --upgrade "https://github.com/2818194829/SpyderCopilotChat/releases/download/v0.8.13/spydercopilotchat-0.8.13-py3-none-any.whl"
+python -m pip install --user --no-deps --upgrade --force-reinstall "https://cdn.jsdelivr.net/gh/2818194829/SpyderCopilotChat@main/latest/spydercopilotchat-0-py3-none-any.whl"
 ```
 
-也可以打开 [Releases](https://github.com/2818194829/SpyderCopilotChat/releases) 手动下载最新版 `.whl`，再 `python -m pip install --user --no-deps 下载路径\spydercopilotchat-x.y.z-py3-none-any.whl`。URL 里的版本号换成页面上最新的那个。
+这条 URL **永远不变**：每次发版，发布流程会把新 wheel 覆盖到仓库的 `latest/` 目录，重跑同一行就是最新版。升级也是同一行。
 
-三个参数各有原因，别省：
+为什么不用 `github.com/.../releases/download/...`：那个域名在国内经常连不上，pip 会连试 5 次然后报
+
+```text
+ConnectTimeoutError: Connection to github.com timed out. (connect timeout=15)
+error: connection-timeout
+```
+
+配了清华 PyPI 镜像也没用——镜像只代理 PyPI 上的包，GitHub Release 的文件是 pip 直接去 `github.com` 取的，不经过镜像。jsDelivr 在国内有节点，实测可达。
+
+> 文件名里的 `-0-` 是故意的：pip 要求 wheel 名字形如 `名称-版本-py3-none-any.whl`，版本段写死才能让 URL 固定。真实版本在 wheel 内部的 METADATA 里，装完仍是 0.8.13，`pip show` 也显示真实版本。`--force-reinstall` 不能省：版本没变时 pip 会说「already installed with the same version」，加它才保证每次都取 CDN 上当前那份。刚发版后 CDN 可能有最多约 12 小时缓存，急着要新包就用下面的方式二。
+
+四个参数各有原因，别省：
 
 | 参数 | 为什么 |
 |---|---|
 | `--user` | Spyder 独立安装包的自带环境是只读的，插件必须落进 user site（`%APPDATA%\Python\Python3XX\site-packages`），Spyder 才能发现入口点。用系统 Python / Anaconda 装时若它自己的 site-packages 可写，pip 会装到那个 Python 的目录里，Spyder 根本看不见 |
 | `--no-deps` | `spyder` / `qtpy` / `requests` 由 Spyder 自带环境提供。若用别的 Python 装，pip 会为了满足 `spyder>=6.0` 把整套 Spyder + PyQt5 再拉一份进 user site；user site 优先级更高，会把 IDE 里的 Spyder 顶掉 |
-| `--upgrade` | 升级时覆盖旧版 |
+| `--upgrade` / `--force-reinstall` | 覆盖旧版；见上面关于固定版本名的说明 |
 
 更省事的是直接用 Spyder 自带的解释器（依赖它自己就有，不需要 `--no-deps`）：
 
 ```bash
-"<Spyder 安装目录>\envs\spyder-runtime\python.exe" -m pip install --user --upgrade <wheel 路径或 URL>
+"<Spyder 安装目录>\envs\spyder-runtime\python.exe" -m pip install --user --upgrade --force-reinstall <上面的 CDN URL>
 ```
 
 不需要管理员权限。
 
-### 方式二：装最新开发版（需要 Git）
+### 方式二：从 Release 手动下载 / 加速直连
+
+浏览器打开 [Releases](https://github.com/2818194829/SpyderCopilotChat/releases)，下最新版的 `.whl`，再：
+
+```bash
+python -m pip install --user --no-deps --upgrade 下载路径\spydercopilotchat-x.y.z-py3-none-any.whl
+```
+
+如果只是 `github.com` 连不上、浏览器能开 GitHub，也可以给 Release 链接加一层公共加速前缀（第三方服务，不保证长期可用）：把 `https://github.com/` 换成 `https://gh-proxy.com/https://github.com/`，其余不变。
+
+### 方式三：装最新开发版（需要 Git，且 github.com 可达）
 
 ```bash
 python -m pip install --user --no-deps --upgrade "git+https://github.com/2818194829/SpyderCopilotChat.git"
@@ -48,7 +69,9 @@ ERROR: Error [WinError 2] 系统找不到指定的文件。 while executing comm
 ERROR: Cannot find command 'git' - do you have 'git' installed and in your PATH?
 ```
 
-这不是插件的问题：pip 要先用 `git clone` 把仓库拉到临时目录再现场构建，没 Git 就卡在第一步。两种解法——装 Git for Windows（安装时选 *Use Git from the Windows Command Prompt*，装完重开终端），或者直接用上面的方式一，一行装好、不需要 Git、也不现场构建。
+这不是插件的问题：pip 要先用 `git clone` 把仓库拉到临时目录再现场构建，没 Git 就卡在第一步；`github.com` 连不上时同样会卡住（超时）。装 Git for Windows（安装时选 *Use Git from the Windows Command Prompt*，装完重开终端）并确认能连 GitHub 再试，或者直接用方式一——不需要 Git、不需要直连 GitHub、也不现场构建。
+
+> 这个包目前没有发布到 PyPI，`pip install SpyderCopilotChat` 暂时不可用；`--no-deps` 这条路就是为此准备的。
 
 装完按这个顺序：
 

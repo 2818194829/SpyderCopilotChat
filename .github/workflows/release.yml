@@ -29,3 +29,23 @@ jobs:
             dist/*.whl
             dist/*.tar.gz
           generate_release_notes: true
+
+      # README 里那条「一行装最新版」指向 jsDelivr 的 latest/ 固定路径。
+      # 文件名必须保持不变（版本段固定为 0，真实版本在 wheel 的 METADATA 里），
+      # 每次发版只覆盖内容，用户不用改命令。
+      - name: 同步固定下载链接
+        run: |
+          set -e
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git fetch origin main --depth=1
+          git checkout -B main origin/main
+          mkdir -p latest
+          cp "$(ls dist/*.whl | head -1)" latest/spydercopilotchat-0-py3-none-any.whl
+          git add -f latest/spydercopilotchat-0-py3-none-any.whl
+          if git diff --cached --quiet; then
+            echo "wheel unchanged"
+          else
+            git commit -m "chore(release): 同步 ${{ github.ref_name }} 的最新 wheel [skip ci]"
+            git push origin main
+          fi

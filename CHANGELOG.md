@@ -2,6 +2,28 @@
 
 只记录对使用者有影响的变更。最新的在最上面。
 
+## v0.8.16：Verified Edition（真实 Key 线上验证后修掉两个 Hy4 配置坑）
+
+此前 Hy4 链路全部由本地 mock 服务验证。这版拿到真实 TokenHub Key 做了线上探测，结果 **链路本身完全可用**，问题出在配置和错误分类：
+
+| 探测项 | 实测结果 |
+|---|---|
+| `GET /v1/models` @ `tokenhub.tencentmaas.com` | 200，`hy4` 为 `online`、`hy4-preview` 为 `pre-offline`，列表还含 hy3 / deepseek / kimi / glm 等 |
+| `hy4` chat（非流式 / 流式 / `no_think`） | 全部 200，中文回答无乱码，`usage.completion_tokens_details.reasoning_tokens` 正常 |
+| 插件 `ChatWorker` 走真实网络 | 中文问答、多轮对话、`done` / `usage` 信号全部正常 |
+| `GET /v1/models` @ `tokenhub.tencentcloudmaas.com`（旧默认） | **401002**「API Key 不存在」——两套广州入口各自签发 Key |
+| 用户配置里的 `.../plan/v3`（套餐页地址） | chat 401002、`/models` 404；改成 `/v1` 立刻 200 |
+
+| 改动 | 说明 |
+|---|---|
+| 默认地址改为短别名 | `settings_dialog.py` / FIM / 偏好页 / README 全部从 `tokenhub.tencentcloudmaas.com/v1` 改为 `https://tokenhub.tencentmaas.com/v1`；长域名保留在 `alt_urls` |
+| 配置自动纠正 | 新增 `normalize_hunyuan_url()`：`load_config()` 读配置时，官方 TokenHub 域名下路径不是 `/v1` 的一律规范成 `scheme://host/v1`，只改内存副本、不写文件，打一条 `WARNING`。自定义代理 host 不受影响；`get_provider_config()` 同样受益 |
+| 修 401002 误诊 | 原文 `The API Key does not exist or signature verification failed` 被旧的裸 `"does not exist"` marker 判成「模型名写错」，于是报「模型「hy4」不可用」，改名字永远修不好。现在分类 blob 纳入完整错误体（`authentication_error` 参与判断）、401/403 语义优先于措辞、MODEL markers 去掉裸短语改由正则精确匹配；真实 `400004 The model or service ID ... does not exist` 仍归 MODEL，402 未开通仍归 BALANCE |
+| AUTH 卡片 | 补「地址必须以 `/v1` 结尾」「`/plan/...` 不是接口地址」「两套广州入口 Key 不通用」「地域不匹配也报 401」四步；设置页 tooltip 同步 |
+| `classify()` | 从 `exc.model` 补模型名，错误卡片不再出现「模型「未指定」」 |
+
+新增 `tests/test_v096.py`：74 项（真实错误体分类 / `/v1` 纠正 / 默认地址 / 静态守卫），给 Key 时额外跑 9 项真实线上用例共 **83 项全通过**。全库 **20 个**回归脚本（v077–v096）全绿。本机 `~/.spyder_copilot_chat/config.json` 的 `api_url` 也已从 `/plan/v3` 修正为 `/v1`（原文件备份为 `config.json.bak-20261114-v0816`）。
+
 ## v0.8.15：Quiet Edition（API 出错不再弹 IDE 崩溃窗口）
 
 反馈是「选了 Hy4 发消息，Spyder 弹出『Spyder遇到了内部错误！』问题报告框」，报告正文是 `Chat request failed: 模型「hy4」在 腾讯混元 TokenHub 上不可用`。**进程没崩**：Spyder 6 把 `sys.stderr` 重定向到内部控制台，`spyder/plugins/console/widgets/console.py` 对 error 流的每一行执行 `sig_exception_occurred.emit(...)` → `handle_exception()` → `SpyderErrorDialog.show()`；而 `logging` 的 root / lastResort handler 正好写 stderr，所以插件里一句 `logger.error(...)` 就等价于向 IDE 报一个未处理异常。v0.8.13 只把 traceback 降到 debug，error 级别本身仍在弹；debug 模式下包里三十多处 `exc_info=True` 会输出 `  File "..."` 行，同样会把弹窗勾出来（Spyder 遇到 File 行会把 `is_warning` 重置成 False）。

@@ -473,10 +473,30 @@ v0.8.15 (quiet)：API 出错不再让 Spyder 弹「内部错误」窗口 —— 
     MODEL 卡片也给开通 / 地域 / GET /v1/models 三步指引
   - ApiErrorInfo.links 此前是死字段，现在渲染成卡片里可点的控制台链接
 
+v0.8.16 (verified)：拿真实 TokenHub Key 做线上验证后修掉两个 Hy4 配置坑
+  - 实测结论：短别名 https://tokenhub.tencentmaas.com/v1 上 GET /v1/models
+    返回 200（hy4 online、hy4-preview pre-offline），hy4 的非流式 / 流式 /
+    no_think 请求全 200，中文回答无乱码，usage 带 reasoning_tokens；
+    插件 ChatWorker 的中文问答 / 多轮 / usage 信号也全部跑通
+  - 默认地址从长域名 tokenhub.tencentcloudmaas.com 改成短别名：同一把
+    Key 在长域名返回 401002「API Key 不存在」，两套广州入口各自签发 Key
+  - 用户配置里 /plan/v3 这类套餐页地址会让 chat 走错路径（实测 401002、
+    /models 404）。load_config() 现在把官方域名下非 /v1 的路径自动规范成
+    scheme://host/v1；自定义代理 host 不受影响，纠正会打一条 warning
+  - 修误诊：401002 原文是 "The API Key does not exist ..."，旧的裸
+    "does not exist" marker 把它判成「模型名写错」，于是报「模型 hy4
+    不可用」，用户改名字永远修不好。现在 blob 纳入完整错误体（让
+    authentication_error 参与判断）、401/403 语义优先于措辞、MODEL
+    markers 去掉裸短语靠正则精确匹配；真正的 400004 仍归 MODEL
+  - AUTH 卡片补「地址必须以 /v1 结尾」「两套广州入口 Key 不通用」、
+    「/plan/... 不是接口地址」；设置页 tooltip / 偏好页 / README 同步
+  - FIM auto 后端默认地址同步；新增 test_v096.py 74 项（带 Key 时 83 项，
+    含真实线上 /v1/models + chat + ChatWorker 端到端），全库 20 脚本全绿
+
 """
 
-__version__ = "0.8.15"
-__edition__ = "quiet"
+__version__ = "0.8.16"
+__edition__ = "verified"
 
 # Spyder 把 stderr 的每一行都当成未处理异常弹「内部错误」窗口。包一加载
 # 就接管自己的日志出口，保证任何子模块 import 之前这条隔离已经生效。

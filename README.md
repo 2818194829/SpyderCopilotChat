@@ -2,7 +2,7 @@
 
 把 **GitHub Copilot Chat** 搬进 Spyder 6：侧栏对话、Agent 自动改代码、改动直接标成红绿行等你逐处接受。
 
-![version](https://img.shields.io/badge/version-0.8.15-blue)
+![version](https://img.shields.io/badge/version-0.8.16-blue)
 ![python](https://img.shields.io/badge/python-3.9%2B-blue)
 ![spyder](https://img.shields.io/badge/Spyder-6.x-8A2BE2)
 ![license](https://img.shields.io/badge/license-MIT-green)
@@ -28,7 +28,7 @@ error: connection-timeout
 
 配了清华 PyPI 镜像也没用——镜像只代理 PyPI 上的包，GitHub Release 的文件是 pip 直接去 `github.com` 取的，不经过镜像。jsDelivr 在国内有节点，实测可达。
 
-> 文件名里的 `-0-` 是故意的：pip 要求 wheel 名字形如 `名称-版本-py3-none-any.whl`，版本段写死才能让 URL 固定。真实版本在 wheel 内部的 METADATA 里，装完 `pip show` 显示的是真实版本（当前 0.8.15）。`--force-reinstall` 不能省：版本没变时 pip 会说「already installed with the same version」，加它才保证每次都取 CDN 上当前那份。刚发版后 CDN 可能有最多约 12 小时缓存，急着要新包就用下面的方式二。
+> 文件名里的 `-0-` 是故意的：pip 要求 wheel 名字形如 `名称-版本-py3-none-any.whl`，版本段写死才能让 URL 固定。真实版本在 wheel 内部的 METADATA 里，装完 `pip show` 显示的是真实版本（当前 0.8.16）。`--force-reinstall` 不能省：版本没变时 pip 会说「already installed with the same version」，加它才保证每次都取 CDN 上当前那份。刚发版后 CDN 可能有最多约 12 小时缓存，急着要新包就用下面的方式二。
 
 四个参数各有原因，别省：
 
@@ -222,16 +222,16 @@ rm -rf ~/.spyder_copilot_chat                                         # macOS / 
 
 1. 在 [TokenHub API Key 控制台](https://console.cloud.tencent.com/tokenhub/apikey) 创建 Key，并在 [TokenHub 控制台](https://console.cloud.tencent.com/tokenhub) 确认 `hy4` 模型服务已开通。
 2. 设置里选「腾讯混元 Hy4（TokenHub）」→ 粘贴 Key → 模型选 `hy4`（或 `hy4-preview`）。
-3. 确认 API 地址与 Key 的**地域一致**——Key 按地域签发，广州的 Key 拿去新加坡地址用会 401。
+3. 确认 API 地址**以 `/v1` 结尾**，且与 Key 属于同一地域 / 同一套入口。
 
 | 地域 | API 地址 |
 |---|---|
-| 广州（默认） | `https://tokenhub.tencentcloudmaas.com/v1` |
-| 广州短别名 | `https://tokenhub.tencentmaas.com/v1` |
+| 广州（默认，短别名） | `https://tokenhub.tencentmaas.com/v1` |
+| 广州另一套入口 | `https://tokenhub.tencentcloudmaas.com/v1` |
 | 新加坡 | `https://tokenhub-intl.tencentcloudmaas.com/v1` |
 | 硅谷 | `https://tokenhub-us.tencentcloudmaas.com/v1` |
 
-地址栏的 tooltip 里也列了这几个备选；鼠标停上去就能看到。
+> **v0.8.16 改了默认地址**：旧版默认的长域名对 TokenHub 控制台签发的 Key 会返回 `401002 API Key 不存在`，同一把 Key 在短别名域名则 `GET /v1/models` 返回 200。两套广州入口**各自签发 Key、互不通用**，旧配置里存了长域名的话请手动改成短别名（或改成你 Key 实际所属的那套）。地址必须以 `/v1` 结尾——`/plan/v3` 这类套餐页地址不是接口地址，填进去同样报 401002。v0.8.16 起，官方域名下路径不是 `/v1` 的配置会在读取时**自动纠正**成 `scheme://host/v1` 并打一条 `WARNING`（自定义代理域名不受影响），在设置页点保存即可写回。地址栏 tooltip 里列了全部备选。
 
 ![Hy4 设置页](docs/images/hy4-provider-settings-dark.png)
 
@@ -239,15 +239,17 @@ rm -rf ~/.spyder_copilot_chat                                         # macOS / 
 
 **深度思考**：默认开启，插件用 `thinking: {"type": "enabled"}` 显式控制。思考强度只给 `high`（官方默认）和 `no_think`（等价于关思考）——`low` / `max` 是 DeepSeek 的取值，切到 Hy4 时会自动回落到 `high`，不会发成 400。带工具的 Agent 对话里会启用 Preserved Thinking，把上一轮的 `reasoning_content` 原样回填，避免多轮工具调用时缓存命中率下降。`max_tokens` 自动截到 64K 输出上限，流式请求会带 `stream_options.include_usage` 以便正确统计用量与成本（默认刊例价：输入 ¥6 / 百万 tokens、输出 ¥18 / 百万 tokens，可在设置里改）。
 
-**报错**：TokenHub 的 402 有两种含义——账户余额 / 额度不足，或这个模型服务还没开通；401 最常见的是 Key 与地域不匹配。错误卡片会按这两种情况分别给处置，不会再串成 DeepSeek 充值或 Copilot 订阅。流式响应里夹带的 `{"error": ...}` 帧（HTTP 200 里也可能出现）同样会被识别成错误，不会显示成「回答莫名中断」。
+**报错**：TokenHub 的 402 有两种含义——账户余额 / 额度不足，或这个模型服务还没开通；401 最常见的是 Key 与地域 / 入口不匹配。错误卡片会按这两种情况分别给处置，不会再串成 DeepSeek 充值或 Copilot 订阅。流式响应里夹带的 `{"error": ...}` 帧（HTTP 200 里也可能出现）同样会被识别成错误，不会显示成「回答莫名中断」。
 
-看到「模型「hy4」在 TokenHub 上不可用」时**别急着改模型名**：最常见的原因是控制台还没开通 hy4 服务，或 Key 与 API 地址不属于同一地域（服务端有时会把「没权限」写成 `model does not exist`）。卡片直接给 TokenHub 控制台与 Key 页链接，按「确认已开通 → 核对地域 → `GET /v1/models` 看该地域真正上线的模型」三步走。v0.8.15 起这类错误只在聊天面板出卡片，不会再让 Spyder 弹内部错误窗口。
+**v0.8.16 修了一个很坑的误诊**：`401002` 的原文是 `The API Key does not exist or signature verification failed`，旧版看到 `does not exist` 就把它判成「模型名写错」，于是报出「模型「hy4」在 TokenHub 上不可用」——用户照着改模型名永远修不好。现在 401/403 一律按鉴权处理，错误体里的 `authentication_error` 也参与判断；卡片会直接提示「地址要以 `/v1` 结尾」「两套广州入口 Key 不通用」。真正的模型名错误（如 `400004 The model or service ID ... does not exist`）仍归「模型不可用」，按「确认已开通 → 核对地域 → `GET /v1/models`」三步走。v0.8.15 起这类错误只在聊天面板出卡片，不会再让 Spyder 弹内部错误窗口。
 
 ![Hy4 的 402 错误卡片](docs/images/hy4-error-402-dark.png)
 
 ![Hy4 模型不可用的处置](docs/images/hy4-model-error-dark.png)
 
-> 这条链路按 TokenHub 公开的 OpenAI 兼容接口实现，端到端测试用本地 mock 服务覆盖请求体 / SSE / 错误帧 / 工具回填；没有真实 Key 时不发线上请求，实际可用模型以控制台开通情况为准。`hy4-preview` 官方另支持 `reasoning_effort: none`，设置页目前按正式版 `hy4` 统一给 `high / no_think`。
+![401002 现在报「API Key 失效」并给出换域名指引](docs/images/hy4-auth-401002-dark.png)
+
+> 这条链路按 TokenHub 公开的 OpenAI 兼容接口实现。**v0.8.16 已用真实 Key 做过线上验证**：`GET /v1/models` 返回 200（`hy4` 为 `online`、`hy4-preview` 为 `pre-offline`），`hy4` 的非流式 / 流式 / `no_think` 请求均返回 200，中文回答无乱码，`usage.completion_tokens_details.reasoning_tokens` 正常；插件 `ChatWorker` 的中文问答、多轮对话、`usage` 信号也全部跑通。回归测试仍用本地 mock 服务覆盖请求体 / SSE / 错误帧 / 工具回填，不会在测试里发线上请求。`hy4-preview` 官方另支持 `reasoning_effort: none`，设置页目前按正式版 `hy4` 统一给 `high / no_think`。
 
 ## 安装位置
 

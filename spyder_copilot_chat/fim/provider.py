@@ -348,7 +348,7 @@ _OPENAI_DEFAULT_URLS = {
     "deepseek": "https://api.deepseek.com",
     # v0.8.14：聊天面板切到腾讯混元 Hy4 时，FIM 的 auto 后端会走
     # OpenAI 兼容链路；没有这条映射会误打 api.openai.com，白等一次超时。
-    "hunyuan": "https://tokenhub.tencentcloudmaas.com/v1",
+    "hunyuan": "https://tokenhub.tencentmaas.com/v1",
 }
 
 

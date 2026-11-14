@@ -78,15 +78,18 @@ PROVIDERS = {
     #       {"type":"enabled"|"disabled"}；Hy4 默认 enabled，
     #       reasoning_effort 仅 high / no_think（preview 为 none / high）
     # 地域（实测三个域名均可达，无 Key 时返回 401）：
-    #   广州   https://tokenhub.tencentcloudmaas.com/v1
-    #          短别名 https://tokenhub.tencentmaas.com/v1
+    #   广州   https://tokenhub.tencentmaas.com/v1          ← 实测可用，默认
+    #          另一套入口 https://tokenhub.tencentcloudmaas.com/v1
     #   新加坡 https://tokenhub-intl.tencentcloudmaas.com/v1
     #   硅谷   https://tokenhub-us.tencentcloudmaas.com/v1
+    # v0.8.16：两套广州入口各自签发 Key，并不通用。实测同一把 Key 在短别名
+    # 域名 GET /v1/models 返回 200，在长域名返回 401002「API Key 不存在」。
+    # 旧版把长域名设成默认，于是新用户一填 Key 就被误报成「模型不可用」。
     # Key 在 https://console.cloud.tencent.com/tokenhub/apikey 创建，
     # 按地域签发、不通用；填错地域会直接 401。
     "hunyuan": {
         "label": "腾讯混元 Hy4（TokenHub）",
-        "default_url": "https://tokenhub.tencentcloudmaas.com/v1",
+        "default_url": "https://tokenhub.tencentmaas.com/v1",
         "chat_endpoint": "/chat/completions",
         "needs_api_key": True,
         "needs_oauth": False,
@@ -106,7 +109,7 @@ PROVIDERS = {
         "key_console": "https://console.cloud.tencent.com/tokenhub/apikey",
         "docs": "https://aistudio.tencent.com/hunyuan/doc-center",
         "alt_urls": (
-            "https://tokenhub.tencentmaas.com/v1",
+            "https://tokenhub.tencentcloudmaas.com/v1",
             "https://tokenhub-intl.tencentcloudmaas.com/v1",
             "https://tokenhub-us.tencentcloudmaas.com/v1",
         ),
@@ -755,12 +758,51 @@ def _ensure_dir():
     os.makedirs(CONFIG_DIR, exist_ok=True)
 
 
+#: v0.8.16：TokenHub 的 chat 接口必须以 /v1 结尾。旧版默认长域名、
+#: 以及从控制台套餐页复制来的 /plan/v3，都会把请求发到错误路径，
+#: 网关回 401002「API Key 不存在」，又被旧分类误报成「模型不可用」。
+_OFFICIAL_TOKENHUB_HOSTS = frozenset({
+    "tokenhub.tencentmaas.com",
+    "tokenhub.tencentcloudmaas.com",
+    "tokenhub-intl.tencentcloudmaas.com",
+    "tokenhub-us.tencentcloudmaas.com",
+})
+
+
+def normalize_hunyuan_url(cfg):
+    """把写坏的官方 TokenHub 地址纠正成 ``scheme://host/v1``。
+
+    只改内存副本、不写文件（用户点保存时才落盘）；host 不在官方列表里的
+    自定义代理 / 网关地址一律原样保留，避免误伤。
+    """
+    if not isinstance(cfg, dict) or cfg.get("provider") != "hunyuan":
+        return cfg
+    url = str(cfg.get("api_url") or "")
+    if not url or "://" not in url:
+        return cfg
+    try:
+        from urllib.parse import urlsplit
+        parts = urlsplit(url)
+    except Exception:
+        return cfg
+    if parts.hostname not in _OFFICIAL_TOKENHUB_HOSTS:
+        return cfg
+    if parts.path.rstrip("/") == "/v1" and not parts.query:
+        return cfg
+    fixed = "%s://%s/v1" % (parts.scheme, parts.netloc)
+    cfg = dict(cfg)
+    cfg["api_url"] = fixed
+    logger.warning("TokenHub API 地址已纠正：%s → %s", url, fixed)
+    return cfg
+
+
 def load_config():
     try:
         with open(CONFIG_FILE, "r", encoding="utf-8") as f:
-            return json.load(f)
+            cfg = json.load(f)
     except (FileNotFoundError, json.JSONDecodeError):
         return {}
+    return normalize_hunyuan_url(cfg)
 
 
 def save_config(config):
@@ -1483,9 +1525,15 @@ class SettingsDialog(QDialog):
         # 比写在 README 里更容易在出错时看到。
         alt_urls = p.get("alt_urls") or ()
         if alt_urls:
+            hint = "API Key 按地域签发，不能跨地域调用；换地址记得换 Key。"
+            if key == "hunyuan":
+                hint = (
+                    "两套广州入口各自签发 Key，不通用。默认短别名地址："
+                    "tokenhub.tencentmaas.com。\n"
+                    "若报 401002「API Key 不存在」，换下面另一套长域名试试；"
+                    "新加坡 / 硅谷是另一组地域，Key 还要配对应 -intl / -us 地址。")
             self._api_url_edit.setToolTip(
-                "API Key 按地域签发，不能跨地域调用；换地址记得换 Key。\n"
-                "可选接入地址：\n  " + "\n  ".join(alt_urls)
+                hint + "\n可选接入地址：\n  " + "\n  ".join(alt_urls)
                 + "\nKey 创建：" + p.get("key_console", ""))
         else:
             self._api_url_edit.setToolTip("")

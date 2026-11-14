@@ -312,8 +312,11 @@ _MARKERS = (
     (("content filter", "content_filter", "content policy", "content_policy",
       "responsible ai", "safety system"),
      REFUSED),
+    # 别再放裸的 "does not exist"：TokenHub 的鉴权失败写的是
+    # "The API Key does not exist ..."，会被它误判成模型名写错。
+    # "model ... does not exist" 由 _MODEL_RE 正则兜底，更精确。
     (("model not found", "model_not_found", "model not exist",
-      "model does not exist", "does not exist", "no such model",
+      "model does not exist", "model or service id", "no such model",
       "invalid model", "not a valid model", "unsupported model",
       "unknown model", "model is not supported", "模型不存在", "模型不可用"),
      MODEL),
@@ -397,14 +400,25 @@ def classify(exc=None, *, text="", status=0, body="", provider="", model=""):
                 text = clean_text(exc, 600)
             if not provider:
                 provider = str(getattr(exc, "provider", "") or "")
+            if not model:
+                model = str(getattr(exc, "model", "") or "")
         status = int(status or parse_status(text) or 0)
         detail, code = parse_payload(body or text)
-        blob = f"{code} {detail} {text}".lower()
+        # v0.8.16：分类必须看得到完整错误体。旧实现只拼 message + code，
+        # 于是 TokenHub 401002 的 "The API Key does not exist ..." 被
+        # 「does not exist」判成模型名写错，而同一个 JSON 里的
+        # "authentication_error" 恰好被 parse_payload 丢掉了。
+        raw_body = clean_text(body or "", 4000)
+        blob = f"{code} {detail} {text} {raw_body}".lower()
 
         kind = (_kind_from_exc(exc) if exc is not None else "") \
             or _kind_from_markers(blob) \
             or _kind_from_status(status, blob) \
             or UNKNOWN
+        # 401/403 是网关给出的鉴权结论，措辞再像「模型不存在」也不能覆盖。
+        # TokenHub 的 401002（API Key 不存在 / 签名校验失败）就是靠这条兜住。
+        if status in (401, 403) and kind not in (AUTH, BALANCE, CANCELED):
+            kind = AUTH
         # TokenHub 用 402 表达「模型服务未开通 / 额度不足」，但错误体常写成
         # "model hy4 does not exist" / "model not found"，会被 MODEL markers
         # 抢先判成「模型名写错」——用户照着改名字永远修不好。402 语义优先。
@@ -535,8 +549,18 @@ def _steps(kind, provider, label, model):
                   if link else "到服务商控制台核对 Key 是否被删除 / 轮换")
         third = ("公司网络若做了 TLS 拦截，也会表现成 401，先换手机热点对比")
         if provider == "hunyuan":
-            third = ("TokenHub 的 401 最常见是**地域不匹配**：广州 / 新加坡 / 硅谷 "
-                     "各自签发 Key，换了 API 地址就要换对应地域的 Key")
+            # 实测：同一个 Key 在短别名域名 200、在长域名 401002「API Key
+            # 不存在」。两套入口各自签发 Key，只改模型名永远修不好。
+            return (
+                first, second,
+                "接口地址必须以 **`/v1` 结尾**："
+                "`https://tokenhub.tencentmaas.com/v1`（默认）或"
+                "`https://tokenhub.tencentcloudmaas.com/v1`。"
+                "套餐页 `/plan/...` 之类不是接口地址，填进去同样报 401002",
+                "TokenHub 有**两套广州入口**且各自签发 Key，不通用；"
+                "Key 没填错却仍报 401002 就换另一套域名再点「测试连接」"
+                "（新加坡 / 硅谷是另一组地域，地域不匹配同样报 401）",
+            )
         return (first, second, third)
     if kind == RATE_LIMIT:
         return (

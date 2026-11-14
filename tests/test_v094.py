@@ -37,7 +37,8 @@ if ROOT not in sys.path:
 from spyder_copilot_chat import api_errors as A  # noqa: E402
 from spyder_copilot_chat.widgets import settings_dialog as SD  # noqa: E402
 
-BASE_URL = "https://tokenhub.tencentcloudmaas.com/v1"
+# v0.8.16：默认地址改成实测可用的短别名；长域名移到 alt_urls。
+BASE_URL = "https://tokenhub.tencentmaas.com/v1"
 _results = []
 
 

@@ -1921,6 +1921,10 @@ class CopilotChatPanel(QWidget):
         theme.named(self._scroll, "stream")
         self._scroll.setWidgetResizable(True)
         self._scroll.setFrameShape(QFrame.NoFrame)
+        # 对话流永远不横向滚动：一条长路径就能把内容顶宽，底部那条横向
+        # 滚动条会吃掉视图高度、把审批按钮挤到折叠线以下（v0.8.4 实拍）。
+        # 内容侧已经做了省略（ElidedLabel），这里直接禁掉。
+        self._scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         self._inner = QWidget()
         theme.named(self._inner, "streamInner")
         self._inner_lay = QVBoxLayout(self._inner)
@@ -1943,6 +1947,34 @@ class CopilotChatPanel(QWidget):
         theme.named(self._status_label, "statusLabel")
         self._status_label.setVisible(False)
         dock_lay.addWidget(self._status_label)
+
+        # ── 审批快捷条（v0.8.5）──
+        # 审批卡的按钮长在卡片底部。卡片比视图高的时候（一个 200 行的 diff
+        # 就够），「批准 / 拒绝」会落到折叠线以下——用户看到「等待批准」，
+        # 却找不到按钮，得先把对话流滚下去。这条固定在输入框上方，挂起期间
+        # 才出现，滚到哪里都在。
+        self._approval_bar = theme.card("approvalBar")
+        bar_lay = QHBoxLayout(self._approval_bar)
+        bar_lay.setContentsMargins(m["pad"], 3, m["pad"], 3)
+        bar_lay.setSpacing(6)
+        self._approval_bar_text = QLabel("")
+        theme.named(self._approval_bar_text, "approvalBarText")
+        self._approval_bar_text.setSizePolicy(
+            QSizePolicy.Ignored, QSizePolicy.Preferred)
+        self._approval_bar_text.setMinimumWidth(0)
+        bar_lay.addWidget(self._approval_bar_text, 1)
+        self._bar_locate = theme.push_button("查看", "ghost")
+        self._bar_locate.setToolTip("滚到审批卡片，逐项查看差异")
+        self._bar_locate.clicked.connect(self._reveal_pending_card)
+        bar_lay.addWidget(self._bar_locate)
+        self._bar_reject = theme.push_button("全部拒绝", "danger")
+        self._bar_reject.clicked.connect(self._bar_reject_all)
+        bar_lay.addWidget(self._bar_reject)
+        self._bar_approve = theme.push_button("全部批准", "primary")
+        self._bar_approve.clicked.connect(self._bar_approve_all)
+        bar_lay.addWidget(self._bar_approve)
+        self._approval_bar.setVisible(False)
+        dock_lay.addWidget(self._approval_bar)
 
         self._thinking_bar = QProgressBar()
         theme.named(self._thinking_bar, "thinkingBar")
@@ -2091,6 +2123,10 @@ class CopilotChatPanel(QWidget):
         super().resizeEvent(event)
         self._sync_header()
         self._sync_editor_chip()
+        # 面板变矮时，待决卡片要重新分空间；否则放大窗口后留下的差异区
+        # 高度会把按钮重新顶出去。
+        if getattr(self, "_pending_card", None) is not None:
+            QTimer.singleShot(0, self._fit_approval_card)
 
     def _sync_header(self):
         """顶栏自适应。
@@ -2405,6 +2441,117 @@ class CopilotChatPanel(QWidget):
         else:
             self._status_label.setVisible(False)
 
+    # ── 审批快捷条（v0.8.5）────────────────────────────────────────
+
+    def _set_awaiting_approval(self, flag):
+        """挂起状态与快捷条的唯一开关入口。
+
+        以前这个布尔量在五处被直接赋值，快捷条一加就会漏掉某条退出路径
+        （取消、转向、新会话、面板卸载），结果卡片已经作废、条还挂着。
+        """
+        self._awaiting_approval = bool(flag)
+        bar = getattr(self, "_approval_bar", None)
+        if bar is None:
+            return
+        if not flag:
+            bar.setVisible(False)
+            return
+        self._refresh_approval_bar()
+
+    def _refresh_approval_bar(self):
+        """按剩余待决项刷新快捷条；没有待决项就自己消失。"""
+        bar = getattr(self, "_approval_bar", None)
+        card = self._pending_card
+        if bar is None or not self._awaiting_approval or card is None:
+            if bar is not None:
+                bar.setVisible(False)
+            return
+        pending, danger = card.pending_stats()
+        if pending <= 0:
+            bar.setVisible(False)
+            return
+        safe = pending - danger
+        if danger and safe:
+            text = f"⏸ 待批准 {pending} 项 · 其中 {danger} 项危险操作需逐项确认"
+        elif danger:
+            text = f"⚠ 还有 {danger} 项危险操作：看差异后逐项批准"
+        else:
+            text = f"⏸ 待批准 {pending} 项操作"
+        self._approval_bar_text.setText(text)
+        theme.set_prop(self._approval_bar_text,
+                       "state", "danger" if danger else "pending")
+        self._bar_locate.setText("查看差异" if danger and not safe else "查看")
+        self._bar_approve.setVisible(safe > 0)
+        self._bar_approve.setText(
+            "全部批准" if safe == pending else f"批准 {safe} 项")
+        bar.setVisible(True)
+
+    def _bar_approve_all(self):
+        card = self._pending_card
+        if card is None:
+            return
+        card.approve_safe()
+
+    def _bar_reject_all(self):
+        card = self._pending_card
+        if card is None:
+            return
+        card.reject_all()
+
+    def _fit_approval_card(self):
+        """把待决卡片压进当前视图高度，让卡内按钮也在视野内。"""
+        card = self._pending_card
+        if card is None:
+            return
+        vp = self._scroll.viewport()
+        height = vp.height()
+        if height <= 40:
+            return
+        pad = theme.current_theme().metrics["pad"]
+        # 留 6px 余量：按钮贴着视图下沿时，差 1~2px 就会被裁掉一条边，
+        # 看着像"按钮坏了"，点起来也不稳。
+        card.fit_to_height(max(120, height - 6),
+                           max(180, vp.width() - 2 * pad))
+
+    def _settle_approval_card(self):
+        """布局稳定后重算一次：适配高度 + 滚到待决操作。"""
+        self._fit_approval_card()
+        self._reveal_pending_card()
+
+    def _reveal_pending_card(self):
+        """把待决操作滚进视野，优先第一条「按钮还没露全」的。
+
+        固定滚到卡片顶部是不够的：卡片比视图高的时，第一条的按钮看得见、
+        第二条的看不见，点「查看」画面不动，看起来像按钮坏了。
+
+        这里直接算滚动条数值，不用 ``ensureWidgetVisible``——后者依赖控件
+        几何已经生效，审批卡刚插进布局时几何还是旧的，调用会静默什么都不
+        做（v0.8.5 实拍：卡片在 261px 处、视图 679px，滚条仍停在 0）。
+        """
+        card = self._pending_card
+        if card is None:
+            return
+        vp = self._scroll.viewport()
+        sb = self._scroll.verticalScrollBar()
+        top, bottom = sb.value(), sb.value() + vp.height()
+        target = None
+        for row in card.rows():
+            if not row.is_pending():
+                continue
+            y = row.mapTo(self._inner, QPoint(0, 0)).y()
+            if y < top or y + row.height() > bottom - 8:
+                target = row
+                break
+        widget = target or card
+        y = widget.mapTo(self._inner, QPoint(0, 0)).y()
+        height = widget.height()
+        if height > vp.height() - 16:
+            # 比视图还高：保证按钮那一端（行底部）在视野里
+            value = y + height - vp.height() + 12
+        else:
+            value = y - 8
+        sb.setValue(int(max(0, min(sb.maximum(), value))))
+
     def _add_msg(self, role, content):
         b = MessageBubble(role, content)
         b.copy_requested.connect(self._on_copy_content)
@@ -2484,6 +2631,10 @@ class CopilotChatPanel(QWidget):
                 i.widget().deleteLater()
         self._welcome = None
         self._current_bubble = None
+        # 审批卡也在这批被删掉的控件里：快捷条不能再指着一张不存在的卡，
+        # 否则点一下就是 RuntimeError（v0.8.5）。
+        self._set_awaiting_approval(False)
+        self._pending_card = None
 
     # ── 斜杠命令 ──
 
@@ -2909,7 +3060,7 @@ class CopilotChatPanel(QWidget):
         self._clear_ui()
         self._messages = []
         self._current_bubble = None
-        self._awaiting_approval = False
+        self._set_awaiting_approval(False)
         self._pending_card = None
         self._last_card = None
         # 清除 Todo 列表
@@ -3282,7 +3433,8 @@ class CopilotChatPanel(QWidget):
         self._thinking_bar.setVisible(False)
         # 审批挂起期间不能恢复输入框，否则用户会在卡片未决时发出新请求
         if self._awaiting_approval:
-            self._set_status("⏸ 等待批准：请在上方审批卡片中逐项确认")
+            self._set_status("⏸ 等待批准：用输入框上方的按钮快速处理，"
+                             "或到卡片里看差异逐项确认")
             return
         self._set_status("")
         # 安全网：如果 _on_done/_on_error 未正常调用 _finalize，
@@ -3401,7 +3553,6 @@ class CopilotChatPanel(QWidget):
 
         不使用模态对话框 / 嵌套事件循环，避免与 QThread 信号重入冲突。
         """
-        self._awaiting_approval = True
         self._agent_active = True
         self._tc_handled = True
         self._cancel_btn.setVisible(False)
@@ -3419,9 +3570,16 @@ class CopilotChatPanel(QWidget):
         card.decided.connect(self._on_approval_completed)
         card.undo_requested.connect(self._undo_checkpoint)
         self._inner_lay.insertWidget(self._inner_lay.count() - 1, card)
-        self._scroll_to_bottom()
         self._pending_card = card
         self._last_card = card
+        card.changed.connect(self._refresh_approval_bar)
+        self._set_awaiting_approval(True)
+        # 卡片构造时还不知道视图多高；等布局跑完再分配差异区高度，
+        # 否则「批准」按钮会被长 diff 顶到折叠线以下。滚动同理：几何在
+        # 下一轮事件循环才生效，晚一点再来一次。
+        self._fit_approval_card()
+        for delay in (0, 60, 200):
+            QTimer.singleShot(delay, self._settle_approval_card)
         # v0.5.6：只读（以及策略允许自动执行的写操作）不打扰用户，
         # 卡片里只留下真正需要人工确认的项；延迟到下一个事件循环执行。
         policy = self._approval_policy()
@@ -3439,7 +3597,7 @@ class CopilotChatPanel(QWidget):
 
     def _on_approval_completed(self, approved_calls):
         """用户逐项（或批量）作出决定后恢复 Agent 循环"""
-        self._awaiting_approval = False
+        self._set_awaiting_approval(False)
         self._pending_card = None
         self._audit.log(
             "approval_decision",
@@ -4247,7 +4405,7 @@ class CopilotChatPanel(QWidget):
         self._flush_chunks()
         if self._current_bubble:
             self._current_bubble.end_stream()
-        self._awaiting_approval = False
+        self._set_awaiting_approval(False)
         self._pending_card = None
         self._agent_active = False
         self._tc_handled = False
@@ -4279,7 +4437,7 @@ class CopilotChatPanel(QWidget):
         self._current_bubble = None
         self._agent_active = False
         self._tc_handled = False
-        self._awaiting_approval = False
+        self._set_awaiting_approval(False)
         self._pending_card = None
         self._pending_notes = []
         self._busy = False

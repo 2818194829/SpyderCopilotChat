@@ -15,7 +15,7 @@ import html
 import json
 import os
 
-from qtpy.QtCore import QTimer, Signal
+from qtpy.QtCore import QSize, QTimer, Qt, Signal
 from qtpy.QtWidgets import (
     QFrame, QHBoxLayout, QLabel, QPushButton, QSizePolicy,
     QTextEdit, QToolButton, QVBoxLayout, QWidget,
@@ -30,6 +30,54 @@ from . import theme
 from . import diff_view as _diff
 
 MAX_DIFF_LINES = 220
+
+# 差异预览的高度窗口（v0.8.5）：上限沿用旧值，下限保证还能看出改了什么。
+MAX_DIFF_HEIGHT = 190
+MIN_DIFF_HEIGHT = 56
+# 只够露出两三行的极限高度：再低就没有阅读价值，不如整块收起。
+ABS_MIN_DIFF = 26
+# 兜底估算（控件还没排版时用）；正常路径都走实测的 fixed_height()。
+CARD_CHROME = 132
+ROW_CHROME = 80
+
+
+class ElidedLabel(QLabel):
+    """尾部省略的标签，且不把文字宽度顶给父布局。
+
+    ``QLabel`` 的 ``minimumSizeHint`` 等于整段文字宽度。一条 60 字符的绝对
+    路径（``D:\\python_dev\\…\\坦克大战\\_check_levels.py``）会把审批卡的最小
+    宽度顶到 500px 以上，于是整条对话流横向溢出：底部冒出横向滚动条，卡片
+    右侧的「待批准」和折叠箭头被推到视野外（v0.8.4 实拍）。
+
+    路径只需要辨认出是哪个文件，中间省略就够，文件名留在尾部。
+    """
+
+    def __init__(self, text="", parent=None):
+        super().__init__(parent)
+        self._full = text or ""
+        self.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
+        self.setMinimumWidth(0)
+        super().setText(self._elided())
+
+    def setText(self, text):
+        self._full = text or ""
+        super().setText(self._elided())
+
+    def fullText(self):
+        return self._full
+
+    def _elided(self):
+        width = max(48, self.width() - 2)
+        return self.fontMetrics().elidedText(self._full, Qt.ElideMiddle, width)
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        super().setText(self._elided())
+
+    def minimumSizeHint(self):
+        hint = super().minimumSizeHint()
+        return QSize(0, hint.height())
+
 
 
 # ── 需要审批 / 会改动文件系统的工具集合 ────────────────────────────────
@@ -266,13 +314,14 @@ class ApprovalRow(QFrame):
 
     decided = Signal(bool)
 
-    def __init__(self, tool_call, preview, parent=None):
+    def __init__(self, tool_call, preview, parent=None, max_diff=MAX_DIFF_HEIGHT):
         super().__init__(parent)
         self._tc = tool_call
         self._state = "pending"
         self._danger = preview.get("risk") == "danger"
         self._raw_html = preview["html"]
         self._html_palette = theme.html_colors()
+        self._max_diff = int(max_diff or MAX_DIFF_HEIGHT)
         m = theme.current_theme().metrics
         theme.named(self, "approvalRow")
         theme.set_prop(self, "risk", "danger" if self._danger else preview["risk"])
@@ -283,39 +332,47 @@ class ApprovalRow(QFrame):
 
         head = QHBoxLayout()
         head.setSpacing(6)
+        self._head_widgets = []
         label, kind = RISK_LABELS.get(preview["risk"], RISK_LABELS["read"])
-        head.addWidget(theme.badge(label, kind))
+        badge = theme.badge(label, kind)
+        head.addWidget(badge)
+        self._head_widgets.append(badge)
         if self._danger:
             warn = theme.badge("需单独确认", "danger")
             warn.setToolTip("不可逆或影响外部系统的操作，「全部批准」不会覆盖它")
             head.addWidget(warn)
+            self._head_widgets.append(warn)
 
         title = QLabel(html.escape(preview["name"]))
         theme.named(title, "toolTitle")
         head.addWidget(title)
+        self._head_widgets.append(title)
 
-        path_lbl = QLabel(html.escape(preview["headline"] or "(无路径)"))
+        path_lbl = ElidedLabel(preview["headline"] or "(无路径)")
         theme.named(path_lbl, "approvalPath")
-        path_lbl.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
         path_lbl.setToolTip(preview["path"] or preview["headline"])
         head.addWidget(path_lbl, 1)
+        self._head_widgets.append(path_lbl)
 
         self._state_lbl = QLabel("待批准")
         theme.named(self._state_lbl, "stateLabel")
         theme.set_prop(self._state_lbl, "state", "pending")
         head.addWidget(self._state_lbl)
+        self._head_widgets.append(self._state_lbl)
 
         self._toggle = theme.icon_button("chevron", "收起差异", 22)
         self._toggle.setCheckable(True)
         self._toggle.setChecked(True)
         self._toggle.clicked.connect(self._on_toggle)
         head.addWidget(self._toggle)
+        self._head_widgets.append(self._toggle)
+        self._user_choice = None      # 用户自己点过折叠箭头后就不再自动收放
         lay.addLayout(head)
 
         self._view = QTextEdit()
         theme.named(self._view, "diffView")
         self._view.setReadOnly(True)
-        self._view.setMaximumHeight(190)
+        self._view.setMaximumHeight(self._max_diff)
         self._view.setFrameShape(QFrame.NoFrame)
         self._view.setHtml(self._raw_html)
         self._fit_diff_height()
@@ -338,22 +395,72 @@ class ApprovalRow(QFrame):
 
         旧实现用 ``行数 × 16`` 估算，跟字号 / 自动换行脱节：字号调大后
         会切掉内容，调小则底部空一截。这里直接问文档要真实高度。
+
+        上限不是常数，而是由 ``ApprovalCard.fit_to_height()`` 按当前视图
+        高度算出来的——卡片比视图高时，批准按钮会落到折叠线以下。
         """
         doc = self._view.document()
         width = max(160, self._view.viewport().width() - 4)
         doc.setTextWidth(width)
         height = int(doc.size().height()) + 10
-        height = min(190, max(52, height))
+        floor = min(MIN_DIFF_HEIGHT, self._max_diff)
+        height = min(self._max_diff, max(floor, height))
         if abs(self._view.height() - height) > 1:
             self._view.setFixedHeight(height)
+
+    def fixed_height(self):
+        """除差异区以外的固定高度。
+
+        直接问布局要：``sizeHint`` 减去差异区本身的高度。手写
+        ``边距 + 徽章行 + 按钮行 + 间距`` 会和 QVBoxLayout 的实际排布差
+        4~8px，而 8px 正好够把按钮顶出视野——这个函数存在的理由就是
+        别再用估算。
+        """
+        shown = 0 if self._view.isHidden() else self._view.height()
+        return max(0, self.sizeHint().height() - shown)
+
+    def set_max_diff(self, value):
+        """审批卡按视图高度重新分配差异区高度（v0.8.5）。"""
+        value = int(value or MAX_DIFF_HEIGHT)
+        if value == self._max_diff:
+            return
+        self._max_diff = value
+        self._view.setMaximumHeight(value)
+        self._fit_diff_height()
+
+    def max_diff(self):
+        return self._max_diff
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
         self._fit_diff_height()
 
     def _on_toggle(self, checked):
+        self._user_choice = bool(checked)
         self._view.setVisible(checked)
         self._toggle.setToolTip("收起差异" if checked else "展开差异")
+        self._toggle.setIcon(theme.make_icon(
+            "chevron" if checked else "chevron_right",
+            theme.current_theme()["text_muted"]))
+
+    def set_compact(self, compact):
+        """空间不够时自动收起差异，把位置让给批准/拒绝。
+
+        按钮够不着比少看几行代码严重得多：差异一次点击就能重新展开，
+        而一个被挤出视野的按钮会让整个 Agent 卡住等一个点不到的决定。
+        用户自己点过箭头就不再干预。
+        """
+        compact = bool(compact)
+        if self._user_choice is not None:
+            return
+        if compact == self._view.isHidden():
+            return
+        self._toggle.setChecked(not compact)
+        self._on_toggle(not compact)
+        self._user_choice = None      # 自动收放不算用户选择
+
+    def is_compact(self):
+        return self._view.isHidden()
 
     def _decide(self, approved):
         if self._state != "pending":
@@ -405,11 +512,14 @@ class ApprovalCard(QFrame):
 
     decided = Signal(object)       # list[dict]：被批准的工具调用
     undo_requested = Signal(str)   # checkpoint id
+    changed = Signal()             # 任一行的状态变化（供固定快捷条刷新计数）
 
-    def __init__(self, tool_calls, base_dir=None, parent=None):
+    def __init__(self, tool_calls, base_dir=None, parent=None,
+                 max_diff=MAX_DIFF_HEIGHT):
         super().__init__(parent)
         self._cp_id = None
         self._finished = False
+        self._max_diff = int(max_diff or MAX_DIFF_HEIGHT)
         m = theme.current_theme().metrics
         theme.named(self, "approvalCard")
         theme.set_prop(self, "state", "pending")
@@ -425,8 +535,9 @@ class ApprovalCard(QFrame):
 
         self._rows = []
         for tc in tool_calls:
-            row = ApprovalRow(tc, build_preview(tc, base_dir), self)
-            row.decided.connect(self._maybe_finish)
+            row = ApprovalRow(tc, build_preview(tc, base_dir), self,
+                              max_diff=self._max_diff)
+            row.decided.connect(self._on_row_decided)
             lay.addWidget(row)
             self._rows.append(row)
 
@@ -439,6 +550,7 @@ class ApprovalCard(QFrame):
         hint = QLabel(hint_text)
         theme.named(hint, "hintLabel")
         hint.setWordWrap(True)
+        self._hint = hint
         lay.insertWidget(1, hint)
 
         footer = QHBoxLayout()
@@ -475,15 +587,102 @@ class ApprovalCard(QFrame):
         QTimer.singleShot(0, _apply)
 
     def _approve_all(self):
-        # 危险操作必须逐项显式确认，批量按钮不覆盖它们
+        self.approve_safe()
+
+    def _reject_all(self):
+        self.reject_all()
+
+    def approve_safe(self):
+        """批准所有非危险项。危险操作必须逐项显式确认，批量不覆盖它们。"""
         for row in self._rows:
             if row.is_pending() and not row.is_dangerous():
                 row._decide(True)
 
-    def _reject_all(self):
+    def reject_all(self):
+        """拒绝所有未决项。拒绝永远可以批量——它是可逆的那一侧。"""
         for row in self._rows:
             if row.is_pending():
                 row._decide(False)
+
+    # ── 给固定快捷条用的查询接口（v0.8.5）─────────────────────────
+
+    def rows(self):
+        return list(self._rows)
+
+    def pending_stats(self):
+        """返回 (待决数, 其中危险数)。"""
+        pending = [r for r in self._rows if r.is_pending()]
+        return len(pending), sum(1 for r in pending if r.is_dangerous())
+
+    def first_pending_row(self):
+        for row in self._rows:
+            if row.is_pending():
+                return row
+        return None
+
+    def fixed_height(self):
+        """卡片里除各条差异区以外的开销：标题、提示、批量按钮、边距、间距。
+
+        提示文案带 ``wordWrap``，在 460px 宽的面板里会折成三行；常数估
+        104px 差了近 40px，正好够把底部按钮顶出视野。所以这里用实测的
+        ``_hint.height()``（前提是先按最终宽度排过一次版）。
+        """
+        m = theme.current_theme().metrics
+        hint = self._hint.height() if self._hint.height() > 1 \
+            else self._hint.sizeHint().height()
+        footer = max(self._all_ok.sizeHint().height(),
+                     self._all_no.sizeHint().height())
+        # 标题、提示、N 条操作、底部按钮 → N+3 个条目，N+2 个间距
+        return (2 * (m["gap"] + 1) + self._title.sizeHint().height()
+                + hint + footer + (len(self._rows) + 2) * m["gap"])
+
+    def fit_to_height(self, available, width=None):
+        """按可视高度给每条操作的差异区分配空间。
+
+        卡片比视图高的时候，底部的「批准 / 拒绝」会落到折叠线以下：用户
+        看到「等待批准」，却怎么也点不到按钮（v0.8.4 实拍，一个 200 行的
+        diff 就够触发）。
+
+        分三档让位，顺序是「先压差异，再折差异，最后才让卡片超出视图」：
+          1. 还有富余 → 差异区按内容高度（上限 ``_max_diff``）
+          2. 只够几行 → 压到能露出的行数
+          3. 连最小差异都放不下 → 收起差异，只留徽章行与按钮
+        按钮够不着比少看几行代码严重：差异一次点击就能重新展开，而一个
+        被挤出视野的按钮会让 Agent 卡在一个点不到的决定上。
+        """
+        available = int(available or 0)
+        if available <= 0 or not self._rows:
+            return
+        if width and width > 150:
+            # 先按最终宽度排一次版，否则量到的是默认宽度下的折行高度
+            self.resize(int(width), self.height())
+            lay = self.layout()
+            if lay is not None:
+                lay.activate()
+
+        fixed_card = self.fixed_height()
+        row_fixed = self._rows[0].fixed_height()
+        per_row = (available - fixed_card) // len(self._rows)
+        room = per_row - row_fixed
+
+        if room >= MIN_DIFF_HEIGHT:
+            diff = int(min(self._max_diff, room))
+            compact = False
+        elif room >= ABS_MIN_DIFF:
+            diff = int(room)
+            compact = False
+        else:
+            diff = MIN_DIFF_HEIGHT
+            compact = True
+
+        for row in self._rows:
+            row.set_compact(compact)
+            if not compact:
+                row.set_max_diff(diff)
+
+    def _on_row_decided(self, approved):
+        self.changed.emit()
+        self._maybe_finish(approved)
 
     def _maybe_finish(self, _approved=None):
         if self._finished or any(r.is_pending() for r in self._rows):

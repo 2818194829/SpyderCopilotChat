@@ -1268,6 +1268,17 @@ QLabel#stateLabel[state="done"] {{ color: {t['text_faint']}; }}
 QLabel#hintLabel {{
     color: {t['text_faint']}; font-size: {xs}px; background: transparent;
 }}
+/* 审批快捷条（v0.8.5）：固定在输入框上方，滚到哪里都在。 */
+QFrame#approvalBar {{
+    background: {t['warning_soft']};
+    border: 1px solid {t['warning']};
+    border-radius: {max(6, radius - 2)}px;
+}}
+QLabel#approvalBarText {{
+    color: {t['warning']}; font-size: {sm}px; font-weight: 600;
+    background: transparent;
+}}
+QLabel#approvalBarText[state="danger"] {{ color: {t['danger']}; }}
 
 /* ── Composer ─────────────────────────────────────────── */
 QFrame#composer {{

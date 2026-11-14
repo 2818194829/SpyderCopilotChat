@@ -2,7 +2,7 @@
 
 把 **GitHub Copilot Chat** 搬进 Spyder 6：侧栏对话、Agent 自动改代码、改动直接标成红绿行等你逐处接受。
 
-![version](https://img.shields.io/badge/version-0.8.4-blue)
+![version](https://img.shields.io/badge/version-0.8.5-blue)
 ![python](https://img.shields.io/badge/python-3.9%2B-blue)
 ![spyder](https://img.shields.io/badge/Spyder-6.x-8A2BE2)
 ![license](https://img.shields.io/badge/license-MIT-green)
@@ -55,6 +55,14 @@ Spyder 独立安装包把自带环境目录设成只读 ACL，`pip` 默认会落
 折叠的前提不是 CSS，而是**归属**：一段叙述后面若还跟着工具调用，它属于过程；这一轮到此为止，它才是结论。所以折起来的是过程，答案始终留在外面。失败例外——过程里出现报错时保持展开，不让错误被折进「已完成」。
 
 ![过程折叠](docs/images/process-expanded-light.png)
+
+## 审批
+
+写文件、跑命令前会先在对话流里给出差异，逐条批准。审批卡的按钮长在卡片底部，卡片比侧栏高时它们会被挤到折叠线以下，所以输入框上方另有一条固定审批条：数量、`查看`、`全部拒绝`、`批准 N 项`，滚到哪里都在。
+
+危险操作（删除、危险命令）不参与批量批准，这时条上只写「还有 N 项危险操作」，必须回到卡片看过 diff 再逐项点。
+
+![审批](docs/images/approval-bar-light.png)
 
 ## 安装位置
 

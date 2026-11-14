@@ -325,6 +325,6 @@ v0.8.4 "Fold Edition" — 过程收进折叠面板，只留结论：
 
 """
 
-__version__ = "0.8.4"
-__edition__ = "fold"
+__version__ = "0.8.5"
+__edition__ = "reachable"
 

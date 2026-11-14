@@ -9,6 +9,8 @@ dist/*
 dist/preview/*.log
 dist/preview/*.json
 dist/preview/*.png
+# 回归脚本造出来的临时文件（测试用的假项目、临时 diff 目标）
+dist/preview/tmp_*/
 
 .venv/
 venv/

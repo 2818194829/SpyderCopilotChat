@@ -3692,18 +3692,37 @@ class CopilotChatPanel(QWidget):
         items = [(i, mark.get("text") or "（空消息）")
                  for i, mark in enumerate(marks)]
         size = self._flyout.build(items, current)
-        # 贴着导航条左缘、与它顶端对齐；面板放不下时往下收
+        # 贴着导航条左缘、与它垂直居中对齐（v0.8.19）。
+        # 刻度是整组居中排布的（MessageRail._tick_rects），浮层贴导航条
+        # 顶端的话会飘在刻度上方：鼠标停在中间的刻度上，清单却出现在
+        # 顶部，两块视觉锚点对不上。面板放不下时再夹回可见范围。
         try:
             rg = self._rail.geometry()
             vg = self._scroll.geometry()
         except RuntimeError:
             return
         x = rg.left() - size.width() - 6
-        y = max(vg.top() + 4, rg.top() - 4)
         h = min(size.height(), max(120, vg.height() - 10))
+        y = self._flyout_y(rg.top(), rg.height(),
+                           vg.top(), vg.height(), h)
         self._flyout.setGeometry(max(4, x), y, size.width(), h)
         self._flyout.setVisible(True)
         self._flyout.raise_()
+
+    @staticmethod
+    def _flyout_y(rail_top, rail_h, view_top, view_h, flyout_h):
+        """清单的 y：对齐导航条的垂直中心，再夹进滚动区。
+
+        纯算术，方便回归测试直接钉住边界：清单比视口还高时优先保证上沿
+        可见（夹到视口顶部），否则上下留 4px，中心尽量贴导航条中心。
+        """
+        center = rail_top + rail_h // 2
+        y = int(center - flyout_h / 2)
+        lo = view_top + 4
+        hi = view_top + view_h - flyout_h - 4
+        if hi < lo:
+            return lo
+        return max(lo, min(hi, y))
 
     def _on_rail_hovered(self, index):
         """鼠标掠过刻度时就展开清单，并把对应行选中。

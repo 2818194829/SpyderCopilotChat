@@ -54,7 +54,13 @@ error: connection-timeout
 python -m pip install --user --no-deps --upgrade 下载路径\spydercopilotchat-x.y.z-py3-none-any.whl
 ```
 
-如果只是 `github.com` 连不上、浏览器能开 GitHub，也可以给 Release 链接加一层公共加速前缀（第三方服务，不保证长期可用）：把 `https://github.com/` 换成 `https://gh-proxy.com/https://github.com/`，其余不变。
+如果只是 `github.com` 连不上、但 `api.github.com` 通，PowerShell 里这一行会**自动查出最新版本号**再装（同一行，不写死版本）：
+
+```powershell
+python -m pip install --user --no-deps --upgrade --force-reinstall ('https://gh-proxy.com/' + ((Invoke-RestMethod 'https://api.github.com/repos/2818194829/SpyderCopilotChat/releases/latest' -TimeoutSec 20).assets | Where-Object { $_.name -like '*.whl' } | Select-Object -First 1).browser_download_url)
+```
+
+原理：`api.github.com` 在国内通常可达，先问它最新 Release 的 wheel 地址，再在前面加一层公共加速前缀下载。`gh-proxy.com` 是第三方服务，不保证长期可用；能直连 GitHub 的话把前缀去掉即可。已在国内网络实测通过。
 
 ### 方式三：装最新开发版（需要 Git，且 github.com 可达）
 

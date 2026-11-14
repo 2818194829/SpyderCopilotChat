@@ -2,6 +2,42 @@
 
 只记录对使用者有影响的变更。最新的在最上面。
 
+## v0.8.11：Stable Edition（内联 diff 把整个 IDE 打崩了）
+
+用户的崩溃栈：
+
+```
+lsp_mixin.py:639 in _process_code_analysis     data._selection()
+editor_diff.py:157 in __getattr__              raise AttributeError(name)
+AttributeError: _selection
+  → lsp_mixin.manage_lsp_handle_errors
+  → LSPHandleError: Error when processing linting
+```
+
+不是 linting 的锅，是我们挂到 `block.userData()` 上的块标记**继承错了基类**。
+
+Spyder 会在每块的行内数据上调 `_selection()` 来画错误下划线：
+
+```python
+data = block.userData()
+data.selection_start = start
+data.selection_end = end
+self.highlight_selection("code_analysis_underline",
+                         data._selection(), ...)   # ← 这里
+```
+
+v0.8.9 的修法只做了「照抄字段」——`DiffBlockMark` 仍直接继承裸 `QTextBlockUserData`，只在 `__init__` 里手动调了一次 Spyder 的 `BlockUserData.__init__`。字段是齐了，**`_selection` 这个方法不在 MRO 里**：属性查找掉进 `__getattr__` 的下划线分支抛 `AttributeError`，Spyder 用 `manage_lsp_handle_errors` 包成 `LSPHandleError`，linting 整条链路炸掉，编辑器跟着瘫。
+
+| 改动 | 说明 |
+|---|---|
+| 真继承 | 模块级先算出 `_MarkBase`（Spyder 的 `BlockUserData` 在就继承它），`class DiffBlockMark(_MarkBase)`。基类必须在 `class` 语句里写死，运行时补不了 |
+| 真 editor | `mark` 现在指向真正的编辑器。`_selection()` 内部要调 `self.editor.document()` / `textCursor()`，传 `None` 是下一颗雷 |
+| `__getattr__` 收窄 | dunder 照常抛 `AttributeError`（sip / `copy` 靠它判「没有」）；其它未知的下划线属性返回**可调用兜底**，既不抛异常也不返回 `None`（`None` 会被当方法调用，又是 `'NoneType' object is not callable`） |
+
+新增 `test_v091.py` 32 项：结构守卫（`issubclass` + `_selection` 在 MRO 里）、复刻 `_process_code_analysis` 下划线路径、行号越界、Spyder 各消费点（`is_cell_header` / `document_cells` / `get_current_warnings` / 面板字段）、`__getattr__` 语义。另加 `probe_v091.py` 真机探针：在真 `CodeEditor` 上塞 `_diagnostics` 跑 `finish_code_analysis()`，直接复刻用户那次调用栈。
+
+全量 v077–v091 共 **436 项**全绿。
+
 ## v0.8.10：Visible Edition（工具条终于说人话）
 
 编辑器顶上那条紫色小条以前只写「+2 处修改」，旁边是「接受修改 / 撤销」。三个问题一眼能看出来：不知道一共改了几个文件、多文件时「全部接受」按钮会突然冒出来、以及**没有真正的「全部拒绝」**——「撤销」只作用于当前这个文件。

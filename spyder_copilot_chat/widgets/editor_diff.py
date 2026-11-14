@@ -60,6 +60,20 @@ try:
 except Exception:  # pragma: no cover - 非 Spyder 环境 / 版本变动
     _SpyderBlockUserData = None
 
+#: 我们的块标记真正要继承的基类。
+#:
+#: v0.8.9 的修法只做了「照抄字段」—— ``DiffBlockMark`` 依旧直接继承
+#: 裸 ``QTextBlockUserData``，只是在 ``__init__`` 里手动调了一次 Spyder
+#: 的 ``BlockUserData.__init__``。字段是齐了，**方法却不在 MRO 里**：
+#: 于是 ``lsp_mixin._process_code_analysis()`` 里的 ``data._selection()``
+#: 落到 ``__getattr__`` 的下划线分支，抛 AttributeError；Spyder 的
+#: ``manage_lsp_handle_errors`` 把它包成 ``LSPHandleError``，linting
+#: 整条链路炸掉，编辑器直接瘫。
+#:
+#: 基类必须在类定义时就定好，不能运行时补。所以这里先算出来再继承。
+_MarkBase = (_SpyderBlockUserData if _SpyderBlockUserData is not None
+             else QTextBlockUserData)
+
 #: 装饰在 ``editor.decorations`` 里占用的 key（remove_key 一键回收）
 _DECO_KEY = "copilot_chat_inline_diff"
 
@@ -89,7 +103,7 @@ def _block_delete(doc, block, cursor):
         cursor.deletePreviousChar()
 
 
-class DiffBlockMark(QTextBlockUserData):
+class DiffBlockMark(_MarkBase):
     """挂在 QTextBlock.userData 上的标记：这行是删除行还是新增行。
 
     必须继承 ``QTextBlockUserData``，否则 Qt 绑定层不接受。
@@ -118,17 +132,35 @@ class DiffBlockMark(QTextBlockUserData):
     一半就中断。所以这里直接继承 Spyder 的 ``BlockUserData`` 并把它的
     字段按「什么都没有」初始化——对这些消费点来说，这就是一个干净的
     空数据块；不是 Spyder 环境时退回自带字段的裸实现。
+
+    **第三个坑（v0.8.11，就是它把 IDE 打崩的）**：v0.8.9 只「照抄了
+    字段」，基类还是裸 ``QTextBlockUserData``。字段能读到，方法不行：
+
+        # lsp_mixin.py: _process_code_analysis()
+        data.selection_start = start
+        data.selection_end = end
+        self.highlight_selection("code_analysis_underline",
+                                 data._selection(),      # ← 不在 MRO 里
+                                 underline_color=block.color)
+
+    ``_selection`` 是 ``BlockUserData`` 上的真方法，抄字段抄不过来，
+    属性查找直接掉进 ``__getattr__`` 的下划线分支 → AttributeError →
+    Spyder 用 ``manage_lsp_handle_errors`` 包成 ``LSPHandleError``，
+    linting 整条链路炸掉。基类必须在 ``class`` 语句里写死，运行时补
+    不了——这就是 ``_MarkBase`` 存在的原因。
+
+    另外 ``editor`` 现在必须是真的编辑器：``_selection()`` 在
+    ``selection_start`` 非 None 时会去调 ``self.editor.document()``，
+    给 None 就是下一颗雷。
     """
 
-    #: Spyder 的 BlockUserData 在的话就用它：字段齐全，typeof 也对得上
-    def __init__(self, kind, hunk):
-        QTextBlockUserData.__init__(self)
+    def __init__(self, kind, hunk, editor=None):
         if _SpyderBlockUserData is not None:
-            # editor=None 是安全的：_selection() 在 selection_start 为
-            # None 时直接返回 None，不会碰 self.editor。
-            _SpyderBlockUserData.__init__(self, None)
+            # 字段 + 方法一起继承：_selection / 未来的新方法都在这条链上
+            _SpyderBlockUserData.__init__(self, editor)
         else:                       # 非 Spyder 环境：自带同名字段
-            self.editor = None
+            QTextBlockUserData.__init__(self)
+            self.editor = editor
             self.breakpoint = False
             self.breakpoint_condition = None
             self.bookmarks = []
@@ -151,10 +183,19 @@ class DiffBlockMark(QTextBlockUserData):
         paintEvent 里抛异常。
 
         下划线开头的（含 dunder）照常抛 AttributeError：sip 内部探测和
-        copy / pickle 都靠这个信号判断"没有"。
+        copy / pickle 都靠这个信号判断"没有"。注意这条分支只该接住
+        「真的没有」的下划线属性——Spyder 自己定义的方法由 MRO 接住，
+        不会走到这里（v0.8.11 之前 ``_selection`` 就是掉进这儿崩的）。
         """
-        if name.startswith("_"):
+        if name.startswith("__") and name.endswith("__"):
             raise AttributeError(name)
+        if name.startswith("_"):
+            # 未知的下划线属性：给一个「什么都不做」的可调用兜底，
+            # 而不是抛异常。Spyder 对 userData 的调用不做 hasattr，
+            # 抛出去就是 LSPHandleError；返回 None 又会被当方法调用
+            # （'NoneType' object is not callable）。两害相权取其轻。
+            logger.debug("DiffBlockMark: unknown private attr %r", name)
+            return lambda *a, **k: None
         return None
 
 
@@ -513,7 +554,7 @@ class InlineReview(QObject):
             editor.setPlainText("\n".join(text for _k, text, _h in rows))
             for number, (kind, _text, h) in enumerate(rows):
                 if kind != "ctx":
-                    mark = DiffBlockMark(kind, h)
+                    mark = DiffBlockMark(kind, h, editor)
                     doc.findBlockByNumber(number).setUserData(mark)
                     # 必须攥住 Python 引用，否则 mark 会在下一轮 GC 里
                     # 被析构，块里留下悬空指针（见 DiffBlockMark 注释）

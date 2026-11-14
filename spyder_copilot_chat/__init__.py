@@ -389,8 +389,24 @@ v0.8.10 (visible)：顶部工具条报「修了几个文件」，并给出真正
     子控件，首次 refresh 发生在视口 show 之前，那时所有子控件的
     isVisible() 都是 False，按它算宽度会把整条撑到 717px 盖住编辑器
 
+v0.8.11 (stable)：内联 diff 把 IDE 打崩 —— 块标记继承错了基类
+  - 崩溃栈落在 Spyder 自己的 linting 上：
+    lsp_mixin._process_code_analysis() 调 data._selection()，而我们挂在
+    block.userData() 上的 DiffBlockMark 没有这个方法 → AttributeError →
+    manage_lsp_handle_errors 包成 LSPHandleError，编辑器直接瘫
+  - 真因：v0.8.9 只「照抄了 Spyder BlockUserData 的字段」，类的基类
+    仍是裸 QTextBlockUserData。字段能读、方法不在 MRO 里
+  - 基类改成模块级算出来的 _MarkBase（Spyder 在就继承它），在 class
+    语句里写死——运行时补不了
+  - editor 不再传 None：mark 现在指向真编辑器，_selection() 内部要用
+    editor.document() / textCursor()，给 None 就是下一颗雷
+  - __getattr__ 收窄：dunder 照常抛，未知的其它下划线属性给「可调用
+    兜底」而不是抛异常；也不能给 None（None 会被当方法调用）
+  - 新增 test_v091.py 32 项 + probe_v091 真机探针：在真 CodeEditor 上
+    塞 diagnostics 跑 finish_code_analysis()，复刻用户那次调用栈
+
 """
 
-__version__ = "0.8.10"
+__version__ = "0.8.11"
 __edition__ = "wired"
 
